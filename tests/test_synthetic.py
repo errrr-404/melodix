@@ -76,7 +76,8 @@ def ink_fraction(page, placed, category=SymbolCategory.NOTEHEAD) -> float:
 @pytest.mark.parametrize("position", [0, 1, 4, 5, 8])
 def test_the_position_mapping_matches_the_staff_grid(position):
     """The generator places heads by staff position, and Stage 1 reads them
-    back the same way. A disagreement would put every head half a space off."""
+    back the same way. A disagreement would put every head half a space off.
+    """
     top, spacing = 200.0, 20.0
     grid = StaffGrid(
         lines=tuple(
@@ -142,7 +143,8 @@ def test_every_box_has_positive_area(clean_page):
 
 def test_every_box_lands_on_ink(clean_page):
     """Ground truth is exact by construction; this catches a drawer whose
-    reported box drifts from what it actually drew."""
+    reported box drifts from what it actually drew.
+    """
     page, placed = clean_page
 
     assert ink_fraction(page, placed) > 0.3
@@ -190,7 +192,8 @@ def test_a_zero_rotation_leaves_boxes_alone(clean_page):
 @pytest.mark.parametrize("angle", [-4.0, -2.0, 1.0, 2.0, 4.0])
 def test_rotated_boxes_still_land_on_their_symbols(angle, clean_page):
     """The regression this file exists for. Rotating the page without
-    rotating the boxes is invisible in every summary the generator prints."""
+    rotating the boxes is invisible in every summary the generator prints.
+    """
     from melodix.geometry.deskew import rotate_image
 
     page, placed = clean_page
@@ -205,7 +208,8 @@ def test_rotated_boxes_still_land_on_their_symbols(angle, clean_page):
 @pytest.mark.parametrize("angle", [2.0, 4.0])
 def test_leaving_boxes_behind_measurably_degrades_them(angle, clean_page):
     """Proves the check above can actually tell the two apart, rather than
-    passing because the measure is insensitive."""
+    passing because the measure is insensitive.
+    """
     from melodix.geometry.deskew import rotate_image
 
     page, placed = clean_page
@@ -219,7 +223,8 @@ def test_leaving_boxes_behind_measurably_degrades_them(angle, clean_page):
 
 def test_rotation_uses_the_same_convention_as_deskew():
     """Both build the matrix about the image centre; a sign flip here would
-    rotate the boxes the wrong way."""
+    rotate the boxes the wrong way.
+    """
     import cv2
 
     symbol = gen.PlacedSymbol(SymbolClass.ROUND_NOTEHEAD, 100.0, 100.0, 120.0, 120.0)
@@ -243,8 +248,8 @@ def test_rotated_boxes_stay_inside_the_page(clean_page):
 
     moved = gen.rotate_symbols(placed, 3.0, 1000, 1400)
 
-    assert all(0 <= s.x_min and s.x_max <= 1000 for s in moved)
-    assert all(0 <= s.y_min and s.y_max <= 1400 for s in moved)
+    assert all(s.x_min >= 0 and s.x_max <= 1000 for s in moved)
+    assert all(s.y_min >= 0 and s.y_max <= 1400 for s in moved)
 
 
 # --------------------------------------------------------------------------- #
@@ -286,7 +291,8 @@ LARGE_TILT_SEED = 2
 
 def test_the_chosen_seed_really_does_tilt_the_page():
     """Guards the test below: if the seed stopped producing a large angle,
-    the wiring test would start passing for the wrong reason."""
+    the wiring test would start passing for the wrong reason.
+    """
     page, placed = gen.render_page(random.Random(5), gen.PageStyle())
 
     _, _, angle = gen.augment(page, placed, random.Random(LARGE_TILT_SEED))
@@ -304,7 +310,8 @@ def test_augmented_labels_still_land_on_ink(clean_page):
 
 def test_augmentation_carries_the_boxes_through_its_own_rotation(clean_page):
     """The wiring, not just the helper. Rotating the page while leaving the
-    boxes behind passes every other check in this file."""
+    boxes behind passes every other check in this file.
+    """
     page, placed = clean_page
 
     out, moved, _ = gen.augment(page.copy(), placed, random.Random(LARGE_TILT_SEED))

@@ -14,6 +14,8 @@ trained checkpoint against held-out pages can do that.
 
 from __future__ import annotations
 
+import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -101,9 +103,26 @@ CENTRE_BOX = (0.45, 0.45, 0.55, 0.55)
 
 
 def test_importing_the_detector_does_not_pull_in_torch():
-    """The whole point of the module: Stage 1 and Stage 3 never pay for it."""
-    assert "torch" not in sys.modules
-    assert "ultralytics" not in sys.modules
+    """The whole point of the module: Stage 1 and Stage 3 never pay for it.
+
+    Checked in a fresh interpreter rather than against this process's
+    ``sys.modules``. Once any test in the suite touches ultralytics, a
+    process-wide assertion would report whatever ran first rather than what
+    importing the detector actually costs.
+    """
+    probe = (
+        "import sys; import melodix.vision.detector; "
+        "print(int('torch' in sys.modules), int('ultralytics' in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+
+    assert result.stdout.split() == ["0", "0"], f"detector imported: {result.stdout!r}"
 
 
 def test_building_a_detector_does_not_load_the_model(tmp_path):
@@ -203,7 +222,8 @@ def test_invalid_config_values_are_rejected(field, value, tmp_path):
 
 def test_an_image_size_off_the_stride_is_rejected():
     """YOLO downsamples by 32 and silently rounds, which would make the
-    reported and actual inference size disagree."""
+    reported and actual inference size disagree.
+    """
     with pytest.raises(ValueError, match="multiple of 32"):
         DetectorConfig(weights=Path("w.pt"), image_size=1000)
 
@@ -449,7 +469,8 @@ def test_a_box_without_four_coordinates_is_rejected(tmp_path):
 
 def test_a_box_spilling_past_the_page_edge_is_clamped(tmp_path):
     """YOLO routinely emits corners a hair outside [0, 1] for an edge symbol,
-    and BoundingBox validates strictly. Clamping keeps a real detection."""
+    and BoundingBox validates strictly. Clamping keeps a real detection.
+    """
     detector, _ = detector_with(rows=[(-0.02, -0.01, 0.1, 0.1, 0.9, 0)], tmp_path=tmp_path)
 
     hit = detector.detect(page()).detections[0]
@@ -509,7 +530,8 @@ def test_a_confidence_above_one_is_clamped(tmp_path):
 
 def test_a_class_outside_the_schema_is_rejected(tmp_path):
     """The checkpoint was trained against a different label set; guessing
-    would report the wrong drum for every symbol of that class."""
+    would report the wrong drum for every symbol of that class.
+    """
     detector, _ = detector_with(rows=[(*CENTRE_BOX, 0.9, NUM_CLASSES)], tmp_path=tmp_path)
 
     with pytest.raises(ValueError, match="outside the schema"):
@@ -681,7 +703,8 @@ def test_a_batch_returns_one_result_per_image(tmp_path):
 
 def test_batch_members_keep_their_own_dimensions(tmp_path):
     """Pages of a scanned book vary in size; letterboxing them to a common
-    shape would shift every normalised box."""
+    shape would shift every normalised box.
+    """
     detector, _ = detector_with(rows=[(*CENTRE_BOX, 0.9, 0)], tmp_path=tmp_path)
 
     results = detector.detect_batch([page(800, 600), page(1024, 768)])
@@ -727,3 +750,61 @@ def test_a_detection_is_immutable():
 
     with pytest.raises(AttributeError):
         hit.confidence = 0.5  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------- #
+# Fidelity of the stubs above
+# --------------------------------------------------------------------------- #
+
+pytestmark_vision = pytest.mark.skipif(
+    importlib.util.find_spec("ultralytics") is None,
+    reason="needs the vision extra: pip install -e '.[dev,vision]'",
+)
+
+
+@pytestmark_vision
+def test_the_parser_reads_a_real_ultralytics_boxes():
+    """The one thing the stubs cannot check about themselves.
+
+    Every other test in this file asserts against FakeBoxes, so they all pass
+    just as happily if the real ultralytics API differs from what FakeBoxes
+    imitates. This builds a genuine `Boxes` and runs the same parser over it.
+    """
+    import torch
+    from ultralytics.engine.results import Boxes
+
+    from melodix.vision.detector import _detections_from_results
+
+    # Real Boxes take pixel xyxy plus the source shape, and derive .xyxyn.
+    boxes = Boxes(
+        torch.tensor([[100.0, 200.0, 140.0, 240.0, 0.91, float(SymbolClass.CROSS_NOTEHEAD)]]),
+        orig_shape=(PAGE_H, PAGE_W),
+    )
+
+    class Result:
+        pass
+
+    result = Result()
+    result.boxes = boxes
+
+    found = _detections_from_results([result], threshold=0.25)
+
+    assert len(found) == 1
+    assert found[0].symbol is SymbolClass.CROSS_NOTEHEAD
+    assert found[0].confidence == pytest.approx(0.91, abs=1e-6)
+    # x 100..140 of 800 -> centre 0.15, width 0.05
+    assert found[0].box.cx == pytest.approx(0.15, abs=1e-6)
+    assert found[0].box.w == pytest.approx(0.05, abs=1e-6)
+    assert found[0].box.cy == pytest.approx(220 / PAGE_H, abs=1e-6)
+
+
+@pytestmark_vision
+def test_the_real_boxes_expose_the_attributes_the_stubs_imitate():
+    """Guards FakeBoxes against an ultralytics API change."""
+    import torch
+    from ultralytics.engine.results import Boxes
+
+    boxes = Boxes(torch.tensor([[1.0, 2.0, 3.0, 4.0, 0.5, 0.0]]), orig_shape=(600, 800))
+
+    for attribute in ("xyxyn", "conf", "cls"):
+        assert hasattr(boxes, attribute), f"FakeBoxes imitates .{attribute}"

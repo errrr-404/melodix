@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
-from typing import Iterable
 
 try:
     import cv2  # type: ignore
@@ -28,7 +27,8 @@ def blank_page(
 
 def _draw_line_np(out: npt.NDArray[np.uint8], p0: tuple[int, int], p1: tuple[int, int], thickness: int = 1) -> None:
     """Draw a simple anti-aliased line by rasterising endpoints and filling a
-    square neighbourhood for thickness. Not perfect but fine for tests."""
+    square neighbourhood for thickness. Not perfect but fine for tests.
+    """
     x0, y0 = p0
     x1, y1 = p1
     dx = abs(x1 - x0)

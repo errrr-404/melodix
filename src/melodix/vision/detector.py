@@ -261,7 +261,7 @@ def _default_model_factory(weights: Path, config: DetectorConfig) -> Any:
         DetectorNotAvailableError: If ultralytics is not installed.
     """
     try:
-        from ultralytics import YOLO
+        from ultralytics import YOLO  # type: ignore[attr-defined]
     except ImportError as error:  # pragma: no cover - requires the extra absent
         raise DetectorNotAvailableError(_INSTALL_HINT) from error
 

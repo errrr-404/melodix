@@ -54,6 +54,9 @@ from melodix.vision.dataset import (  # noqa: E402
 )
 from melodix.vision.labels import NUM_CLASSES, SymbolClass, label_for_id  # noqa: E402
 
+Page = npt.NDArray[np.uint8]
+"""A grayscale page being drawn into, modified in place."""
+
 INK = 0
 PAPER = 255
 
@@ -137,7 +140,9 @@ def position_to_y(top_line_y: float, spacing: float, position: int) -> float:
     return bottom_line_y - position * (spacing / 2.0)
 
 
-def _pad(x_min, y_min, x_max, y_max, pad: float):
+def _pad(
+    x_min: float, y_min: float, x_max: float, y_max: float, pad: float
+) -> tuple[float, float, float, float]:
     """Widen a box by a uniform margin, so a stroke's width is inside it."""
     return (x_min - pad, y_min - pad, x_max + pad, y_max + pad)
 
@@ -147,7 +152,9 @@ def _pad(x_min, y_min, x_max, y_max, pad: float):
 # --------------------------------------------------------------------------- #
 
 
-def draw_round_head(page, x: float, y: float, spacing: float, filled: bool = True):
+def draw_round_head(
+    page: Page, x: float, y: float, spacing: float, filled: bool = True
+) -> PlacedSymbol:
     """Draw a filled or hollow oval notehead."""
     rx, ry = spacing * 0.62, spacing * 0.46
     cv2.ellipse(
@@ -164,7 +171,7 @@ def draw_round_head(page, x: float, y: float, spacing: float, filled: bool = Tru
     return PlacedSymbol(symbol, *_pad(x - rx, y - ry, x + rx, y + ry, 1.0))
 
 
-def draw_cross_head(page, x: float, y: float, spacing: float):
+def draw_cross_head(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw an X notehead: cymbals and hi-hat."""
     reach = spacing * 0.46
     weight = max(1, int(spacing * 0.14))
@@ -181,7 +188,7 @@ def draw_cross_head(page, x: float, y: float, spacing: float):
     )
 
 
-def draw_circle_cross_head(page, x: float, y: float, spacing: float):
+def draw_circle_cross_head(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw an X notehead inside a circle: ride bell."""
     draw_cross_head(page, x, y, spacing * 0.75)
     radius = spacing * 0.62
@@ -192,7 +199,7 @@ def draw_circle_cross_head(page, x: float, y: float, spacing: float):
     )
 
 
-def draw_diamond_head(page, x: float, y: float, spacing: float):
+def draw_diamond_head(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a diamond notehead."""
     rx, ry = spacing * 0.55, spacing * 0.5
     points = np.array(
@@ -202,7 +209,7 @@ def draw_diamond_head(page, x: float, y: float, spacing: float):
     return PlacedSymbol(SymbolClass.DIAMOND_NOTEHEAD, *_pad(x - rx, y - ry, x + rx, y + ry, 1.0))
 
 
-def draw_triangle_head(page, x: float, y: float, spacing: float):
+def draw_triangle_head(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a triangular notehead."""
     rx, ry = spacing * 0.55, spacing * 0.5
     points = np.array([[x - rx, y + ry], [x, y - ry], [x + rx, y + ry]], dtype=np.int32)
@@ -210,7 +217,7 @@ def draw_triangle_head(page, x: float, y: float, spacing: float):
     return PlacedSymbol(SymbolClass.TRIANGLE_NOTEHEAD, *_pad(x - rx, y - ry, x + rx, y + ry, 1.0))
 
 
-def draw_slash_head(page, x: float, y: float, spacing: float):
+def draw_slash_head(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a rhythm slash."""
     rx, ry = spacing * 0.5, spacing * 0.6
     points = np.array(
@@ -220,7 +227,7 @@ def draw_slash_head(page, x: float, y: float, spacing: float):
     return PlacedSymbol(SymbolClass.SLASH_NOTEHEAD, *_pad(x - rx, y - ry, x + rx, y + ry, 1.0))
 
 
-def draw_stem(page, x: float, y_from: float, y_to: float, spacing: float) -> None:
+def draw_stem(page: Page, x: float, y_from: float, y_to: float, spacing: float) -> None:
     """Draw a stem. Deliberately unlabelled: stems are not in the schema."""
     cv2.line(
         page,
@@ -231,7 +238,7 @@ def draw_stem(page, x: float, y_from: float, y_to: float, spacing: float) -> Non
     )
 
 
-def draw_beam(page, x_from: float, x_to: float, y: float, spacing: float):
+def draw_beam(page: Page, x_from: float, x_to: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a beam joining two stems."""
     thickness = max(2, int(spacing * 0.42))
     cv2.rectangle(
@@ -240,7 +247,7 @@ def draw_beam(page, x_from: float, x_to: float, y: float, spacing: float):
     return PlacedSymbol(SymbolClass.BEAM, *_pad(x_from, y, x_to, y + thickness, 1.0))
 
 
-def draw_accent(page, x: float, y: float, spacing: float):
+def draw_accent(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a horizontal wedge above a notehead."""
     reach = spacing * 0.55
     weight = max(1, int(spacing * 0.12))
@@ -251,7 +258,7 @@ def draw_accent(page, x: float, y: float, spacing: float):
     )
 
 
-def draw_marcato(page, x: float, y: float, spacing: float):
+def draw_marcato(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a vertical wedge above a notehead."""
     reach = spacing * 0.5
     weight = max(1, int(spacing * 0.12))
@@ -262,14 +269,14 @@ def draw_marcato(page, x: float, y: float, spacing: float):
     )
 
 
-def draw_dot(page, x: float, y: float, spacing: float, symbol: SymbolClass):
+def draw_dot(page: Page, x: float, y: float, spacing: float, symbol: SymbolClass) -> PlacedSymbol:
     """Draw a small filled dot, used for staccato and augmentation."""
     radius = max(1, int(spacing * 0.16))
     cv2.circle(page, (int(x), int(y)), radius, INK, -1)
     return PlacedSymbol(symbol, *_pad(x - radius, y - radius, x + radius, y + radius, 1.0))
 
 
-def draw_quarter_rest(page, x: float, y: float, spacing: float):
+def draw_quarter_rest(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a quarter rest as a zigzag."""
     weight = max(1, int(spacing * 0.18))
     points = [
@@ -286,7 +293,9 @@ def draw_quarter_rest(page, x: float, y: float, spacing: float):
     )
 
 
-def draw_hook_rest(page, x: float, y: float, spacing: float, symbol: SymbolClass):
+def draw_hook_rest(
+    page: Page, x: float, y: float, spacing: float, symbol: SymbolClass
+) -> PlacedSymbol:
     """Draw an eighth or sixteenth rest: a diagonal with one or two hooks."""
     weight = max(1, int(spacing * 0.16))
     hooks = 1 if symbol is SymbolClass.REST_EIGHTH else 2
@@ -312,7 +321,9 @@ def draw_hook_rest(page, x: float, y: float, spacing: float, symbol: SymbolClass
     )
 
 
-def draw_bar_rest(page, x: float, y: float, spacing: float, symbol: SymbolClass):
+def draw_bar_rest(
+    page: Page, x: float, y: float, spacing: float, symbol: SymbolClass
+) -> PlacedSymbol:
     """Draw a whole or half rest: a filled bar against a staff line."""
     half_w = spacing * 0.5
     height = spacing * 0.4
@@ -323,7 +334,7 @@ def draw_bar_rest(page, x: float, y: float, spacing: float, symbol: SymbolClass)
     return PlacedSymbol(symbol, *_pad(x - half_w, top, x + half_w, top + height, 1.0))
 
 
-def draw_percussion_clef(page, x: float, top_line_y: float, spacing: float):
+def draw_percussion_clef(page: Page, x: float, top_line_y: float, spacing: float) -> PlacedSymbol:
     """Draw the two thick vertical bars that open a percussion staff."""
     weight = max(2, int(spacing * 0.3))
     y_top = top_line_y + spacing * 0.6
@@ -342,7 +353,9 @@ def draw_percussion_clef(page, x: float, top_line_y: float, spacing: float):
     )
 
 
-def draw_time_signature(page, x: float, top_line_y: float, spacing: float, upper: int, lower: int):
+def draw_time_signature(
+    page: Page, x: float, top_line_y: float, spacing: float, upper: int, lower: int
+) -> PlacedSymbol:
     """Draw a stacked time signature."""
     scale = spacing / 14.0
     thickness = max(1, int(spacing * 0.16))
@@ -364,7 +377,7 @@ def draw_time_signature(page, x: float, top_line_y: float, spacing: float, upper
     )
 
 
-def draw_repeat_dots(page, x: float, top_line_y: float, spacing: float):
+def draw_repeat_dots(page: Page, x: float, top_line_y: float, spacing: float) -> PlacedSymbol:
     """Draw the two dots that sit beside a repeat barline."""
     radius = max(1, int(spacing * 0.17))
     rows = (
@@ -379,7 +392,7 @@ def draw_repeat_dots(page, x: float, top_line_y: float, spacing: float):
     )
 
 
-def draw_repeat_measure(page, x: float, top_line_y: float, spacing: float):
+def draw_repeat_measure(page: Page, x: float, top_line_y: float, spacing: float) -> PlacedSymbol:
     """Draw the percent sign meaning "repeat the previous bar"."""
     weight = max(1, int(spacing * 0.14))
     centre = position_to_y(top_line_y, spacing, 4)
@@ -401,7 +414,7 @@ def draw_repeat_measure(page, x: float, top_line_y: float, spacing: float):
     )
 
 
-def draw_flag(page, x: float, y: float, spacing: float, symbol: SymbolClass):
+def draw_flag(page: Page, x: float, y: float, spacing: float, symbol: SymbolClass) -> PlacedSymbol:
     """Draw one or two flags hanging off a stem end."""
     weight = max(1, int(spacing * 0.16))
     count = 1 if symbol is SymbolClass.FLAG_EIGHTH else 2
@@ -420,7 +433,7 @@ def draw_flag(page, x: float, y: float, spacing: float, symbol: SymbolClass):
     )
 
 
-def draw_grace_note(page, x: float, y: float, spacing: float):
+def draw_grace_note(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a small slashed head: a flam or drag."""
     small = spacing * 0.6
     rx, ry = small * 0.6, small * 0.45
@@ -438,7 +451,9 @@ def draw_grace_note(page, x: float, y: float, spacing: float):
     )
 
 
-def draw_letter_modifier(page, x: float, y: float, spacing: float, symbol: SymbolClass):
+def draw_letter_modifier(
+    page: Page, x: float, y: float, spacing: float, symbol: SymbolClass
+) -> PlacedSymbol:
     """Draw the small ``o`` or ``+`` that sits above a hi-hat notehead."""
     radius = spacing * 0.28
     weight = max(1, int(spacing * 0.12))
@@ -450,7 +465,7 @@ def draw_letter_modifier(page, x: float, y: float, spacing: float, symbol: Symbo
     return PlacedSymbol(symbol, *_pad(x - radius, y - radius, x + radius, y + radius, weight))
 
 
-def draw_ghost_note(page, x: float, y: float, spacing: float):
+def draw_ghost_note(page: Page, x: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw a notehead wrapped in parentheses."""
     draw_round_head(page, x, y, spacing * 0.9)
     reach = spacing * 0.85
@@ -473,7 +488,7 @@ def draw_ghost_note(page, x: float, y: float, spacing: float):
     )
 
 
-def draw_tie(page, x_from: float, x_to: float, y: float, spacing: float):
+def draw_tie(page: Page, x_from: float, x_to: float, y: float, spacing: float) -> PlacedSymbol:
     """Draw an arc joining two noteheads."""
     weight = max(1, int(spacing * 0.11))
     centre = ((x_from + x_to) / 2.0, y)
@@ -500,14 +515,16 @@ NOTEHEAD_DRAWERS = {
 # --------------------------------------------------------------------------- #
 
 
-def draw_staff_lines(page, top_line_y: float, x_start: int, x_end: int, style: PageStyle) -> None:
+def draw_staff_lines(
+    page: Page, top_line_y: float, x_start: int, x_end: int, style: PageStyle
+) -> None:
     """Draw the five lines of one staff."""
     for step in range(5):
         row = int(round(top_line_y + step * style.line_spacing))
         cv2.line(page, (x_start, row), (x_end, row), INK, style.line_thickness)
 
 
-def draw_barline(page, x: float, top_line_y: float, style: PageStyle) -> None:
+def draw_barline(page: Page, x: float, top_line_y: float, style: PageStyle) -> None:
     """Draw a barline spanning one staff. Not labelled: Stage 1 finds these."""
     cv2.line(
         page,
@@ -519,7 +536,7 @@ def draw_barline(page, x: float, top_line_y: float, style: PageStyle) -> None:
 
 
 def fill_measure(
-    page,
+    page: Page,
     rng: random.Random,
     x_start: float,
     x_end: float,

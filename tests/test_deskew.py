@@ -21,7 +21,6 @@ from melodix.geometry.deskew import (
     rotate_image,
 )
 from melodix.geometry.staff import detect_staff_grids
-
 from tests.helpers import blank_page, draw_notehead, draw_staff, draw_stem
 
 # Estimator accuracy is bounded by the fine search step (0.05 degrees); allow a

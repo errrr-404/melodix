@@ -23,18 +23,6 @@ ensemble systems and slices measures::
             ...
 """
 
-from melodix.geometry.systems import (
-    BarlineColumn,
-    Measure,
-    System,
-    SystemGroupingConfig,
-    assign_systems,
-    build_columns,
-    build_systems,
-    classify_barlines,
-    slice_measures,
-)
-
 from melodix.geometry.barlines import (
     BarlineDetectionConfig,
     VerticalSegment,
@@ -43,7 +31,6 @@ from melodix.geometry.barlines import (
     isolate_vertical_runs,
     merge_collinear,
 )
-
 from melodix.geometry.deskew import (
     DeskewConfig,
     DeskewResult,
@@ -68,6 +55,17 @@ from melodix.geometry.staff import (
     group_bands_into_grids,
     isolate_horizontal_runs,
     to_grayscale,
+)
+from melodix.geometry.systems import (
+    BarlineColumn,
+    Measure,
+    System,
+    SystemGroupingConfig,
+    assign_systems,
+    build_columns,
+    build_systems,
+    classify_barlines,
+    slice_measures,
 )
 
 __all__ = [

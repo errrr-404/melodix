@@ -31,7 +31,6 @@ from melodix.geometry.systems import (
     classify_barlines,
     slice_measures,
 )
-
 from tests.helpers import blank_page, draw_notehead, draw_staff, draw_stem
 
 
@@ -377,7 +376,8 @@ def test_three_staves_of_one_system_stay_together():
 def test_margin_barlines_do_not_fuse_separate_systems():
     """The ordering guarantee. These columns align down the entire page; if
     alignment were taken as evidence of a system, both systems would collapse
-    into one and the error would be silent."""
+    into one and the error would be silent.
+    """
     staves = page_staves()
     margins = [
         barline(100, 100, 180),

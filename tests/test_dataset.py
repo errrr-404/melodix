@@ -124,7 +124,8 @@ def test_a_box_inside_the_page_is_not_clipped():
 )
 def test_a_box_running_off_an_edge_is_clipped(cx, cy):
     """Legal, but worth reporting: a dataset full of these usually means the
-    annotations were exported against a different crop than the images."""
+    annotations were exported against a different crop than the images.
+    """
     assert box(cx=cx, cy=cy, w=0.1, h=0.1).is_clipped
 
 
@@ -144,7 +145,8 @@ def test_a_box_is_built_from_pixel_corners():
 
 def test_pixels_survive_a_round_trip():
     """A systematic error here shifts every box on every page equally and
-    still trains to a plausible loss."""
+    still trains to a plausible loss.
+    """
     corners = (100.0, 200.0, 300.0, 400.0)
 
     subject = BoundingBox.from_pixels(*corners, PAGE_W, PAGE_H)
@@ -208,7 +210,8 @@ def test_a_box_fully_overlaps_itself():
 
 def test_overlap_never_exceeds_one():
     """Float error can push a self-overlap a few ulps above 1.0, and callers
-    threshold on this value."""
+    threshold on this value.
+    """
     subject = BoundingBox.from_pixels(100, 200, 140, 230, PAGE_W, PAGE_H)
 
     assert subject.iou(subject) <= 1.0
@@ -351,7 +354,8 @@ def test_writing_creates_missing_directories(tmp_path):
 
 def test_an_empty_annotation_list_writes_an_empty_file(tmp_path):
     """Ultralytics distinguishes a missing label file from an empty one: the
-    empty file marks a deliberate negative example."""
+    empty file marks a deliberate negative example.
+    """
     path = tmp_path / "page.txt"
 
     write_label_file(path, ())
@@ -410,7 +414,8 @@ def test_a_label_path_swaps_images_for_labels():
 
 def test_pairing_uses_the_last_images_component():
     """A dataset stored under a directory called 'images' would otherwise
-    have its root rewritten instead of its split directory."""
+    have its root rewritten instead of its split directory.
+    """
     found = label_path_for_image(Path("images/dataset/images/val/page.png"))
 
     assert found == Path("images/dataset/labels/val/page.txt")
@@ -491,7 +496,8 @@ def test_a_different_seed_gives_a_different_split():
 
 def test_input_order_does_not_change_the_split():
     """Pages are sorted before shuffling, so filesystem ordering cannot leak
-    into which pages are held out."""
+    into which pages are held out.
+    """
     forward = pages(30)
     backward = list(reversed(forward))
 
@@ -624,6 +630,21 @@ def test_data_yaml_records_the_split_directories(tmp_path):
     body = path.read_text(encoding="utf-8")
     assert "train: images/fit" in body
     assert "val: images/holdout" in body
+
+
+def test_data_yaml_writes_an_absolute_root(tmp_path):
+    """Ultralytics resolves a relative `path` against its own datasets
+    directory, not the working directory, so a relative root silently sends
+    training somewhere else.
+    """
+    path = tmp_path / "data.yaml"
+
+    write_data_yaml(path, Path("datasets/relative"))
+
+    root_line = next(
+        line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("path: ")
+    )
+    assert Path(root_line.removeprefix("path: ")).is_absolute()
 
 
 def test_data_yaml_uses_posix_paths(tmp_path):

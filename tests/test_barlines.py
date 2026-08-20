@@ -22,7 +22,6 @@ from melodix.geometry.barlines import (
     merge_collinear,
 )
 from melodix.geometry.staff import binarize, to_grayscale
-
 from tests.helpers import blank_page, draw_notehead, draw_staff, draw_stem
 
 # A drawn stroke rasterises with rounded caps, so its detected extent runs a
@@ -80,7 +79,8 @@ def test_min_height_px_may_be_left_unset():
 
 def test_the_kernel_is_shorter_than_the_height_floor():
     """So a stroke just under the floor survives the opening and is rejected
-    explicitly, rather than being erased and silently vanishing."""
+    explicitly, rather than being erased and silently vanishing.
+    """
     assert BarlineDetectionConfig().vertical_kernel_ratio < 1.0
 
 
@@ -270,7 +270,8 @@ def test_segments_are_ordered_left_to_right():
 
 def test_two_strokes_in_one_column_stay_separate():
     """Connected components, not a column projection: a projection would fuse
-    these into one impossible stroke spanning the gap between systems."""
+    these into one impossible stroke spanning the gap between systems.
+    """
     page = blank_page(600, 800)
     draw_stem(page, x=400, top_row=100, bottom_row=180, width=3)
     draw_stem(page, x=400, top_row=400, bottom_row=480, width=3)

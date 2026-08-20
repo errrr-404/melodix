@@ -69,17 +69,18 @@ def test_the_schema_matches_the_published_class_ids():
 
 
 def test_the_class_count_matches_the_schema():
-    assert NUM_CLASSES == len(PINNED_SCHEMA)
+    assert len(PINNED_SCHEMA) == NUM_CLASSES
 
 
 def test_ids_run_contiguously_from_zero():
     """YOLO indexes its output head positionally; a gap would shift every
-    class above it."""
+    class above it.
+    """
     assert [label.class_id for label in LABELS] == list(range(NUM_CLASSES))
 
 
 def test_labels_are_ordered_by_id():
-    assert LABELS == tuple(sorted(LABELS, key=lambda label: label.class_id))
+    assert tuple(sorted(LABELS, key=lambda label: label.class_id)) == LABELS
 
 
 def test_ids_are_unique():
@@ -131,7 +132,8 @@ def test_every_class_carries_a_description(label):
 
 def test_no_class_name_mentions_a_drum_voice():
     """The design rule, asserted mechanically. A class named for a drum has
-    folded position into the label and will need a retrain to re-voice."""
+    folded position into the label and will need a retrain to re-voice.
+    """
     voices = ("snare", "kick", "hihat", "hi_hat", "tom", "ride", "crash", "cymbal", "bell")
     offenders = [label.name for label in LABELS if any(v in label.name for v in voices)]
 
@@ -189,7 +191,8 @@ def test_the_rest_category_covers_the_common_durations():
 
 def test_a_category_with_no_members_returns_empty_not_an_error():
     """Guards the filter itself, using a category that is currently populated
-    only so the call shape is exercised."""
+    only so the call shape is exercised.
+    """
     assert isinstance(labels_in_category(SymbolCategory.STRUCTURE), tuple)
 
 
@@ -255,7 +258,8 @@ def test_lookup_by_name_is_case_insensitive():
 @pytest.mark.parametrize("class_id", [-1, NUM_CLASSES, 999])
 def test_an_unknown_id_is_rejected(class_id):
     """A checkpoint emitting an id outside the schema has diverged from it;
-    returning None would push a silent failure downstream."""
+    returning None would push a silent failure downstream.
+    """
     with pytest.raises(KeyError, match="no symbol class with id"):
         label_for_id(class_id)
 
@@ -283,7 +287,8 @@ def test_a_class_is_its_own_id():
 
 def test_class_names_are_ordered_by_id():
     """Ultralytics reads this list positionally, so order is the id
-    assignment. Sorting it alphabetically would silently remap every class."""
+    assignment. Sorting it alphabetically would silently remap every class.
+    """
     assert class_names() == [name for _, name in PINNED_SCHEMA]
 
 

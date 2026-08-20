@@ -30,6 +30,9 @@ assets/soundfonts/
 # Training runs
 runs/
 
+# Generated datasets, reproducible from their seed
+datasets/
+
 # Editor and OS noise
 .vscode/
 .idea/

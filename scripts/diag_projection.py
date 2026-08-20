@@ -1,10 +1,17 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tests.helpers import blank_page, draw_staff
-from melodix.geometry.deskew import rotate_image, _working_mask, estimate_skew_projection, DEFAULT_CONFIG
-from melodix.geometry.staff import to_grayscale, binarize
 import numpy as np
+from tests.helpers import blank_page, draw_staff
+
+from melodix.geometry.deskew import (
+    DEFAULT_CONFIG,
+    _working_mask,
+    estimate_skew_projection,
+    rotate_image,
+)
+from melodix.geometry.staff import binarize, to_grayscale
 
 page = blank_page()
 page2 = draw_staff(page, top_row=200, spacing=14)

@@ -26,7 +26,6 @@ from melodix.geometry.staff import (
     isolate_horizontal_runs,
     to_grayscale,
 )
-
 from tests.helpers import blank_page, draw_notehead, draw_staff, draw_stem
 
 # Line centroids land on the drawn row exactly, but the horizontal opening can
