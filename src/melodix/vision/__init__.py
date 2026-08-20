@@ -33,6 +33,13 @@ from melodix.vision.dataset import (
     write_data_yaml,
     write_label_file,
 )
+from melodix.vision.detector import (
+    Detection,
+    DetectorConfig,
+    DetectorNotAvailableError,
+    PageDetections,
+    SymbolDetector,
+)
 from melodix.vision.labels import (
     LABELS,
     NUM_CLASSES,
@@ -68,4 +75,10 @@ __all__ = [
     "split_dataset",
     "write_data_yaml",
     "write_label_file",
+    # detector
+    "Detection",
+    "DetectorConfig",
+    "DetectorNotAvailableError",
+    "PageDetections",
+    "SymbolDetector",
 ]
