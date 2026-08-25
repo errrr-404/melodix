@@ -522,3 +522,80 @@ def test_the_clean_dataset_is_used_by_default(tmp_path, capsys):
 
     preamble = capsys.readouterr().out.split("RESOLVED CONFIG")[0]
     assert "degraded" not in preamble
+
+
+# --------------------------------------------------------------------------- #
+# scale: derived, and pinned by the derivation rather than the literal
+# --------------------------------------------------------------------------- #
+
+# Measured on datasets/melodix_synth: augmentation_dot and staccato render
+# 6.0 px on a 1000x1400 page. YOLO letterboxes the long side to imgsz, so at
+# imgsz=1280 that is 6.0 * 1280/1400 = 5.49 px reaching the model.
+SMALLEST_GLYPH_PX_ON_PAGE = 6.0
+PAGE_LONG_SIDE = 1400
+
+# Below roughly half of YOLOv8's finest stride (P3, stride 8) a box has no
+# localisation budget left: clearing IoU 0.5 would need sub-pixel accuracy from
+# a head that predicts on an 8 px grid.
+MIN_GLYPH_PX_AT_INPUT = 4.0
+
+
+def smallest_glyph_at_input(imgsz: int, scale: float) -> float:
+    """Size of the smallest class at model input, at the harshest scale draw."""
+    letterboxed = SMALLEST_GLYPH_PX_ON_PAGE * imgsz / PAGE_LONG_SIDE
+    return letterboxed * (1 - scale)  # ultralytics draws from [1-s, 1+s]
+
+
+def localisation_budget(size_px: float, iou: float) -> float:
+    """How far a predicted box may sit from truth and still clear an IoU."""
+    return size_px * (1 - iou) / (1 + iou)
+
+
+def test_scale_leaves_the_smallest_classes_above_the_localisation_floor():
+    """The reason scale is 0.20 and not the ultralytics default.
+
+    At the stock 0.5 the smallest glyphs reach the model at 2.75 px, where
+    clearing IoU 0.50 demands sub-pixel localisation from a stride-8 head.
+    augmentation_dot at 0.503 mAP50-95 and staccato at 0.687 are the two
+    weakest classes in the baseline, and both are that glyph.
+    """
+    size = smallest_glyph_at_input(
+        int(runner.SCORE_DEFAULTS["imgsz"]), float(runner.SCORE_DEFAULTS["scale"])
+    )
+
+    assert size >= MIN_GLYPH_PX_AT_INPUT, f"smallest glyph falls to {size:.2f} px"
+
+
+def test_the_stock_scale_would_starve_them():
+    """Guards the test above against becoming vacuous: the floor must be one
+    the stock setting actually violates.
+    """
+    stock = smallest_glyph_at_input(1280, 0.5)
+
+    assert stock < MIN_GLYPH_PX_AT_INPUT
+
+
+def test_scale_still_covers_real_engraving_variation():
+    """The other half of the derivation. Rastral sizes span roughly 6-9 pt of
+    staff height, about +/-20%, so scale must not be so small that genuine
+    engraving-size variation goes untrained.
+    """
+    assert runner.SCORE_DEFAULTS["scale"] >= 0.15
+
+
+def test_the_smallest_class_keeps_a_localisation_budget_over_one_pixel():
+    """A budget under a pixel asks for accuracy finer than the P3 grid."""
+    size = smallest_glyph_at_input(
+        int(runner.SCORE_DEFAULTS["imgsz"]), float(runner.SCORE_DEFAULTS["scale"])
+    )
+
+    assert localisation_budget(size, 0.5) > 1.0
+
+
+def test_lowering_imgsz_would_break_the_floor_too():
+    """Scale is not the only lever on this: the derivation depends on imgsz,
+    so halving the render resolution starves the same classes.
+    """
+    assert smallest_glyph_at_input(640, float(runner.SCORE_DEFAULTS["scale"])) < (
+        MIN_GLYPH_PX_AT_INPUT
+    )

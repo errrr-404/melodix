@@ -43,6 +43,7 @@ import numpy.typing as npt
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from melodix.geometry.deskew import rotate_image  # noqa: E402
+from melodix.ingest import write_image  # noqa: E402
 from melodix.vision.dataset import (  # noqa: E402
     Annotation,
     BoundingBox,
@@ -920,7 +921,7 @@ def generate(
             stem = labelled.stem
             image_path = out_root / "images" / group / f"{stem}.png"
             image_path.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(image_path), by_stem[stem])
+            write_image(image_path, by_stem[stem])
             write_label_file(
                 out_root / "labels" / group / f"{stem}.txt", labelled.annotations
             )
@@ -1001,7 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
                 1,
             )
         path = args.out / "preview_boxes.png"
-        cv2.imwrite(str(path), preview)
+        write_image(path, preview)
         print(f"  preview written to {path}")
 
     return 0

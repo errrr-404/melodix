@@ -88,6 +88,12 @@ distinguished by. A sufficient explanation for `time_signature` at 0.872.
 **`mosaic=1.0` is second**, and `close_mosaic=10` did apply — confirmed from
 `train_args`. So epochs 1-20 ran mosaicked and 21-30 ran clean.
 
+**No synthetic run can settle whether mosaic helped or hurt.** mAP50 sits at
+0.9888 on synthetic val — there is no headroom in which a difference could show
+itself. That is a stronger statement than the confound below and is the real
+reason the question stays open: it needs real pages, not a better-controlled
+synthetic run.
+
 **The training curve does not show the expected recovery when mosaic closed.**
 Epoch 21, the first clean epoch, *dropped* 0.0032, and the mean gain per epoch
 was higher with mosaic on (epochs 16-20: +0.00162) than off (21-25: +0.00076).
@@ -201,6 +207,75 @@ Kept only because its `args.yaml` is the artifact that caused the original
 misdiagnosis, and renaming it is cheaper than explaining it twice. Gitignored.
 
 ---
+
+## Predictions recorded before the corrected run
+
+Written down before `stage2_corrected_aug` starts, so neither can be
+reinterpreted afterwards.
+
+### What the run CAN test
+
+**1. Label alignment.** If the Colab snapshot carried misaligned boxes and the
+current dataset does not, the corrected run should reach **mAP50-95 above
+0.9118** with **mAP50 roughly flat near 0.9888**. At or below 0.9118, the label
+hypothesis is wrong and the gap has another cause.
+
+**2. `scale` starving the small classes.** The stock `scale=0.5` took
+`augmentation_dot` and `staccato` from 5.49 px at model input down to 2.75 px at
+the minimum draw. The corrected `scale=0.20` floors them at 4.39 px. If that was
+the constraint, **`augmentation_dot` (0.503) and `staccato` (0.687) should rise
+materially while the saturated classes stay flat** — `cross_notehead` 0.995,
+`percussion_clef` 0.995, `round_notehead` 0.981 have nowhere to go. If every
+class moves together, the cause is elsewhere and `scale` was not the lever.
+
+A caveat recorded in advance, because it bounds the expected size of the win.
+The localisation budget — how far a predicted box may sit from truth and still
+clear an IoU threshold, `d(1-t)/(1+t)` — is **sub-pixel for these classes even
+at scale=0**:
+
+| dot size at model input | IoU 0.50 budget | IoU 0.75 budget |
+|---|---|---|
+| 2.75 px (stock scale=0.5) | 0.92 px | 0.39 px |
+| 4.39 px (corrected scale=0.20) | 1.46 px | 0.63 px |
+| 5.49 px (no scale augmentation) | 1.83 px | 0.78 px |
+
+YOLOv8's finest head is P3 at stride 8. So these classes are near the floor
+*intrinsically*, and mAP50-95 — which averages IoU 0.50 through 0.95 — is
+mechanically capped for them whatever `scale` does. Expect a real improvement,
+not a fix. The durable answer is a larger render, or letting Stage 3
+disambiguate dots geometrically rather than trusting the class.
+
+### What the run CANNOT test
+
+**Whether removing mirror augmentation helped.** Mirrored pages were never in
+the synthetic val set either, so synthetic metrics are blind to it by
+construction. `fliplr=0.0` is justified on domain grounds — mirrored notation
+cannot occur — and stands regardless of what the number does. Answering it needs
+real pages.
+
+## Retrain status: pending, blocked on GPU access
+
+`stage2_corrected_aug` has **not been run.** This machine's torch is a CPU-only
+build (`2.13.0+cpu`, `cuda.is_available() == False`), and the measured local
+cost is **7,278 s/epoch** — 60.6 hours for 30 epochs, against 104 minutes on the
+T4 that produced the baseline. Run it from `notebooks/train_colab.ipynb`.
+
+The training path itself is verified, so the Colab run is de-risked rather than
+merely hoped for. A one-epoch smoke run at `imgsz=320` on 8 pages completed, and
+every setting in `melodix_resolved_config.json` matches what ultralytics wrote
+into the checkpoint's `train_args`:
+
+| setting | resolved | in checkpoint |
+|---|---|---|
+| `fliplr` / `flipud` | 0.0 / 0.0 | 0.0 / 0.0 |
+| `mosaic` / `close_mosaic` | 0.0 / 0 | 0.0 / 0 |
+| `degrees` | 1.0 | 1.0 |
+| `scale` / `translate` | 0.20 / 0.05 | 0.20 / 0.05 |
+| `shear` / `perspective` | 0.0 / 0.0 | 0.0 / 0.0 |
+| `hsv_h` / `hsv_s` / `hsv_v` | 0.0 / 0.0 / 0.25 | 0.0 / 0.0 / 0.25 |
+
+That is the exact drift that produced the baseline's stock augmentation, now
+closed and checked end to end rather than assumed.
 
 ## Label integrity of the current dataset
 

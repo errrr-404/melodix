@@ -65,6 +65,7 @@ __all__ = [
     "load_pdf",
     "page_count",
     "read_grayscale",
+    "write_image",
 ]
 
 #: Render resolution that puts roughly 20 px between staff lines on a
@@ -197,11 +198,53 @@ def read_grayscale(path: Path) -> npt.NDArray[np.uint8]:
         raise ValueError(f"could not decode {path}")
 
     array = np.asarray(image)
-    if array.ndim == 3 and array.shape[2] == 1:
-        array = array[:, :, 0]
+    if array.ndim == 3:
+        if array.shape[2] == 1:
+            array = array[:, :, 0]
+        elif array.shape[2] in (3, 4):
+            # The patched reader routes .tif/.tiff through imdecodemulti with
+            # IMREAD_UNCHANGED, ignoring the flags it was given, so a colour
+            # TIFF can come back three-channel from a grayscale request.
+            code = cv2.COLOR_BGRA2GRAY if array.shape[2] == 4 else cv2.COLOR_BGR2GRAY
+            array = cv2.cvtColor(array, code)
     if array.ndim != 2:
         raise ValueError(f"expected a 2-D grayscale image, got shape {array.shape}")
     return np.ascontiguousarray(array, dtype=np.uint8)
+
+
+def write_image(path: Path, image: npt.NDArray[np.uint8]) -> None:
+    """Write an image, raising rather than failing silently.
+
+    ``cv2.imwrite`` reports failure by returning ``False``, and almost every
+    caller ignores the return value. Under ultralytics' Windows patch the write
+    goes through ``imencode`` plus ``ndarray.tofile`` inside a ``try``, so an
+    unwritable path or an unsupported extension produces ``False`` and no other
+    signal — a dataset generation run would finish reporting success with
+    missing pages.
+
+    Args:
+        path: Destination. Parent directories are created.
+        image: The array to write.
+
+    Raises:
+        ValueError: If the write fails.
+    """
+    import cv2
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Two failure modes to unify: OpenCV raises cv2.error for an unsupported
+    # extension, while the patched writer swallows its exceptions and returns
+    # False. Callers should have to handle one.
+    try:
+        written = cv2.imwrite(str(path), image)
+    except cv2.error as error:
+        raise ValueError(f"could not write {path}: {error}") from error
+    if not written:
+        raise ValueError(
+            f"could not write {path}. The extension may be unsupported, the path "
+            f"unwritable, or the array the wrong dtype ({image.dtype}, "
+            f"shape {image.shape})."
+        )
 
 
 def _check_dpi(dpi: int) -> None:

@@ -14,6 +14,14 @@ other still needs) and reinstalls headless alone.
 ``pip check`` will afterwards report ultralytics' ``opencv-python`` requirement
 as unmet. That is metadata-only — ``import cv2`` works and the API is identical.
 
+**This is a mitigation, not a repair.** It settles which OpenCV distribution is
+installed and settles nothing about the larger problem, which is that importing
+ultralytics mutates global state in libraries this pipeline shares: it rebinds
+``cv2.imread``/``imwrite``/``imshow`` on Windows, calls ``cv2.setNumThreads(0)``
+process-wide, and replaces ``torch.save``. Two live bugs have come out of that
+so far. See ``docs/ultralytics-patches.md`` for the audit and for the cleaner
+long-term answer, which is running inference out of process.
+
 Usage::
 
     python scripts/fix_opencv.py           # fix

@@ -91,13 +91,34 @@ SCORE_DEFAULTS: dict[str, object] = {
     # and partial cover for the tail where deskew declines on low confidence
     # and the full tilt reaches the detector.
     "degrees": 1.0,
-    # Engraving size genuinely varies between publishers and between systems on
-    # one page, so scale augmentation is real signal. Kept below the stock 0.5:
-    # shrinking a page that is already at the resolution floor for small glyphs
-    # costs more than the invariance is worth.
-    "scale": 0.35,
-    # Page margins vary; symbol positions within a system do not vary much.
-    # A small shift only.
+    # Derived, and the derivation matters because the stock 0.5 was starving the
+    # two weakest classes. Ultralytics draws a factor from [1-s, 1+s], so what
+    # counts is the minimum.
+    #
+    # Measured on this dataset: augmentation_dot and staccato render 6.0 px on a
+    # 1000x1400 page, which letterboxes to 5.49 px at imgsz=1280. The stock
+    # scale=0.5 takes that to 2.75 px.
+    #
+    # The failure is not that the glyph vanishes -- a 6 px disc downscaled 2x
+    # still leaves nine dark pixels, measured. It is that the localisation
+    # budget collapses. For equal boxes offset by d, IoU clears a threshold t
+    # only while the offset stays under d(1-t)/(1+t), so:
+    #
+    #   dot at 2.75 px  ->  0.92 px to clear IoU 0.50,  0.39 px for IoU 0.75
+    #   dot at 4.39 px  ->  1.46 px to clear IoU 0.50,  0.63 px for IoU 0.75
+    #
+    # YOLOv8's finest head is P3 at stride 8, so a sub-pixel budget asks for
+    # accuracy finer than the head's own grid.
+    #
+    # 0.20 is chosen because two independent arguments agree on it. Real rastral
+    # sizes span roughly 6-9 pt of staff height, about +/-20% around the middle,
+    # so [0.8, 1.2] covers the engraving variation that actually exists rather
+    # than one invented for augmentation. And it leaves the smallest classes at
+    # 4.39 px, a 59% larger IoU-50 budget than the stock setting allows.
+    "scale": 0.20,
+    # Page margins vary between publishers, but a symbol's position inside its
+    # system does not. A small shift teaches robustness to page registration
+    # without pretending the layout itself moves.
     "translate": 0.05,
     # Nothing in the pipeline produces or corrects shear. A sheared page is not
     # a scan artefact — a scanner produces rotation and perspective, not skew

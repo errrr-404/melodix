@@ -32,6 +32,7 @@ from melodix.ingest import (
     load_pdf,
     page_count,
     read_grayscale,
+    write_image,
 )
 
 # US Letter in PDF points, the unit pypdfium2 scales from.
@@ -57,7 +58,7 @@ def write_pdf(path: Path, pages: int = 1, spacing: int = 7) -> Path:
     return path
 
 
-def write_image(path: Path, height: int = 600, width: int = 800) -> Path:
+def write_page(path: Path, height: int = 600, width: int = 800) -> Path:
     """Write a small raster image."""
     Image.fromarray(staff_array(height=height, width=width)).save(path)
     return path
@@ -130,7 +131,7 @@ def test_an_unsupported_shape_is_rejected():
 
 
 def test_an_image_loads_as_one_page(tmp_path):
-    path = write_image(tmp_path / "page.png")
+    path = write_page(tmp_path / "page.png")
 
     page = load_image(path)
 
@@ -142,7 +143,7 @@ def test_an_image_reports_no_dpi(tmp_path):
     """A scanner's true resolution is not reliably recorded, and a guess would
     put a confident wrong number in the sync map.
     """
-    page = load_image(write_image(tmp_path / "page.png"))
+    page = load_image(write_page(tmp_path / "page.png"))
 
     assert page.dpi is None
 
@@ -223,7 +224,7 @@ def test_the_page_count_can_be_read_without_rendering(tmp_path):
 
 
 def test_an_image_counts_as_one_page(tmp_path):
-    assert page_count(write_image(tmp_path / "page.png")) == 1
+    assert page_count(write_page(tmp_path / "page.png")) == 1
 
 
 def test_a_subset_of_pages_can_be_rendered(tmp_path):
@@ -247,7 +248,7 @@ def test_a_missing_pdf_is_reported(tmp_path):
 
 
 def test_a_non_pdf_suffix_is_reported(tmp_path):
-    path = write_image(tmp_path / "page.png")
+    path = write_page(tmp_path / "page.png")
 
     with pytest.raises(UnsupportedFormatError, match="not a PDF"):
         load_pdf(path)
@@ -395,7 +396,7 @@ def test_a_pdf_dispatches_to_the_pdf_path(tmp_path):
 
 
 def test_an_image_dispatches_to_the_image_path(tmp_path):
-    path = write_image(tmp_path / "page.png")
+    path = write_page(tmp_path / "page.png")
 
     pages = load_document(path)
 
@@ -427,7 +428,7 @@ def test_a_file_with_no_suffix_is_reported(tmp_path):
 
 
 def test_asking_an_image_for_page_two_is_reported(tmp_path):
-    path = write_image(tmp_path / "page.png")
+    path = write_page(tmp_path / "page.png")
 
     with pytest.raises(ValueError, match="only index 0 exists"):
         load_document(path, pages=[1])
@@ -467,13 +468,13 @@ def test_a_loaded_image_feeds_staff_detection(tmp_path):
 
 
 def test_a_grayscale_read_is_two_dimensional(tmp_path):
-    path = write_image(tmp_path / "page.png")
+    path = write_page(tmp_path / "page.png")
 
     assert read_grayscale(path).ndim == 2
 
 
 def test_a_grayscale_read_is_uint8(tmp_path):
-    assert read_grayscale(write_image(tmp_path / "p.png")).dtype == np.uint8
+    assert read_grayscale(write_page(tmp_path / "p.png")).dtype == np.uint8
 
 
 def test_a_singleton_channel_is_squeezed(monkeypatch, tmp_path):
@@ -488,7 +489,7 @@ def test_a_singleton_channel_is_squeezed(monkeypatch, tmp_path):
     """
     import cv2
 
-    path = write_image(tmp_path / "page.png")
+    path = write_page(tmp_path / "page.png")
     real = cv2.imread
 
     def patched(name, flag=cv2.IMREAD_COLOR):
@@ -512,3 +513,64 @@ def test_an_undecodable_file_is_reported(tmp_path):
 
     with pytest.raises(ValueError, match="could not decode"):
         read_grayscale(path)
+
+
+# --------------------------------------------------------------------------- #
+# Writing images, checked
+# --------------------------------------------------------------------------- #
+
+
+def test_a_written_image_reads_back(tmp_path):
+    original = staff_array(height=40, width=60)
+
+    write_image(tmp_path / "out.png", original)
+
+    assert read_grayscale(tmp_path / "out.png").shape == (40, 60)
+
+
+def test_writing_creates_parent_directories(tmp_path):
+    write_image(tmp_path / "a" / "b" / "out.png", staff_array(height=20, width=20))
+
+    assert (tmp_path / "a" / "b" / "out.png").exists()
+
+
+def test_an_unwritable_extension_raises(tmp_path):
+    """cv2.imwrite reports failure by returning False, and almost every caller
+    ignores it. Under the ultralytics Windows patch the write is wrapped in a
+    try that swallows the exception, so a whole generation run can finish
+    reporting success with pages missing.
+    """
+    with pytest.raises(ValueError, match="could not write"):
+        write_image(tmp_path / "out.bogusext", staff_array(height=20, width=20))
+
+
+def test_a_silent_write_failure_is_turned_into_an_error(monkeypatch, tmp_path):
+    """The patched writer's failure mode specifically: returns False, raises
+    nothing.
+    """
+    import cv2
+
+    monkeypatch.setattr(cv2, "imwrite", lambda *a, **k: False)
+
+    with pytest.raises(ValueError, match="could not write"):
+        write_image(tmp_path / "out.png", staff_array(height=20, width=20))
+
+
+def test_a_three_channel_read_is_reduced(monkeypatch, tmp_path):
+    """The patched reader routes .tif/.tiff through imdecodemulti with
+    IMREAD_UNCHANGED, ignoring the flags, so a grayscale request can come back
+    with colour channels.
+    """
+    import cv2
+
+    path = tmp_path / "page.png"
+    write_image(path, staff_array(height=30, width=40))
+    real = cv2.imread
+
+    def patched(name, flag=cv2.IMREAD_COLOR):
+        return real(name, cv2.IMREAD_COLOR)
+
+    monkeypatch.setattr(cv2, "imread", patched)
+
+    assert cv2.imread(str(path), cv2.IMREAD_GRAYSCALE).ndim == 3  # the patch is live
+    assert read_grayscale(path).ndim == 2  # and we are immune to it

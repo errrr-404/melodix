@@ -26,6 +26,7 @@ from melodix.ingest.loader import (
     load_pdf,
     page_count,
     read_grayscale,
+    write_image,
 )
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "load_pdf",
     "page_count",
     "read_grayscale",
+    "write_image",
 ]

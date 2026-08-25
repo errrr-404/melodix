@@ -45,7 +45,7 @@ import numpy.typing as npt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from melodix.ingest import read_grayscale  # noqa: E402
+from melodix.ingest import read_grayscale, write_image  # noqa: E402
 from melodix.vision.dataset import (  # noqa: E402
     IMAGE_SUFFIXES,
     Annotation,
@@ -506,7 +506,7 @@ def degrade_dataset(
 
             # Derived per page so the dataset is stable under additions.
             out, moved = degrade(image, boxes, config, seed=seed * 1_000_003 + index)
-            cv2.imwrite(str(out_images / path.name), out)
+            write_image(out_images / path.name, out)
             write_label_file(out_labels / f"{path.stem}.txt", moved)
             written += 1
 

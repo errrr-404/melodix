@@ -72,6 +72,14 @@ dependency-override mechanism, so `pyproject.toml` cannot prevent this. Run
 `python scripts/fix_opencv.py` after installing; `--check` verifies the state.
 Installing with `uv` needs no fix — the override is declared in `[tool.uv]`.
 
+That script is a **mitigation, not a repair**. The deeper issue is that
+importing ultralytics mutates global state in shared libraries — it rebinds
+`cv2.imread`/`imwrite`/`imshow` on Windows, disables OpenCV threading
+process-wide, and replaces `torch.save`. Two live bugs have come from it.
+`docs/ultralytics-patches.md` is the audit; read it before adding a direct
+`cv2.imread` or `cv2.imwrite` call anywhere. Use `melodix.ingest.read_grayscale`
+and `melodix.ingest.write_image` instead.
+
 ## Staff position convention
 
 Pixel space is y-down. Staff space counts integer half-space steps upward from
@@ -128,5 +136,9 @@ pytest --cov=melodix --cov-report=term-missing
   - Augmentation stated explicitly in `scripts/train_yolo.py`; mirror augmentation refused
   - `notebooks/train_colab.ipynb` calls the script; resolved config written beside the weights
   - `scripts/verify_labels.py` — dataset label integrity; current dataset verified aligned
+- [x] **Phase 2.7** Pre-retrain audit
+  - `scale` derived from measured glyph size and localisation budget (0.5 → 0.20)
+  - ultralytics patch surface enumerated in `docs/ultralytics-patches.md`; risky patches wrapped
+  - **Retrain pending: needs GPU access. See `models/PROVENANCE.md`.**
 - [ ] **Phase 3** Reconstruction and MIDI
 - [ ] **Phase 4** Synthesis and encoding
