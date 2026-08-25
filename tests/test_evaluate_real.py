@@ -517,3 +517,152 @@ def test_all_twenty_eight_classes_appear_in_the_report(tmp_path):
     report = ev.evaluate(Path("unused.pt"), root, detector=StubDetector([[]]))
 
     assert len(report["per_class"]) == 28
+
+
+# --------------------------------------------------------------------------- #
+# Metrics the application actually consumes
+# --------------------------------------------------------------------------- #
+
+
+def test_the_snap_tolerance_comes_from_the_geometry_module():
+    """Derived, not hard-coded, so it tracks StaffGrid.snap.
+
+    One staff position is half a line spacing, and snap's default tolerance is
+    0.4 positions, so at 14 px spacing it absorbs +/-2.8 px.
+    """
+    import inspect
+
+    from melodix.geometry.staff import StaffGrid
+
+    tolerance = inspect.signature(StaffGrid.snap).parameters["tolerance"].default
+
+    assert ev.snap_tolerance_px(14.0) == pytest.approx(tolerance * 7.0)
+    assert ev.snap_tolerance_px(14.0) == pytest.approx(2.8)
+
+
+def test_the_tolerance_scales_with_staff_spacing():
+    assert ev.snap_tolerance_px(28.0) == pytest.approx(2 * ev.snap_tolerance_px(14.0))
+
+
+def test_a_small_class_is_identified_by_its_measured_box(tmp_path):
+    """Measured per corpus rather than listed, so the set adapts when the
+    engraving size does.
+    """
+    truth = [
+        annotation(SymbolClass.AUGMENTATION_DOT, 200, 200, 206, 206),
+        annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 119, 119),
+    ]
+    root = build(tmp_path, [truth])
+    stub = StubDetector([[detection(SymbolClass.AUGMENTATION_DOT, 200, 200, 206, 206)]])
+
+    report = ev.evaluate(Path("u.pt"), root, detector=stub)
+
+    assert report["small_classes"]["classes"] == ["augmentation_dot"]
+
+
+def test_a_large_class_is_not_called_small(tmp_path):
+    truth = [annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 119, 119)]
+    root = build(tmp_path, [truth])
+
+    report = ev.evaluate(Path("u.pt"), root, detector=StubDetector([[]]))
+
+    assert "cross_notehead" not in report["small_classes"]["classes"]
+
+
+def test_centroid_error_is_measured_in_pixels(tmp_path):
+    """A prediction offset two pixels down must report two pixels, not an IoU."""
+    truth = [annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 120, 120)]
+    root = build(tmp_path, [truth])
+    stub = StubDetector([[detection(SymbolClass.CROSS_NOTEHEAD, 100, 102, 120, 122)]])
+
+    report = ev.evaluate(Path("u.pt"), root, detector=stub)
+
+    row = next(r for r in report["per_class"] if r["name"] == "cross_notehead")
+    assert row["centroid"]["dy_median"] == pytest.approx(2.0)
+    assert row["centroid"]["dx_median"] == pytest.approx(0.0)
+
+
+def test_vertical_and_horizontal_error_are_reported_apart(tmp_path):
+    """They feed different things: the row goes to snap, the column decides
+    which notehead a modifier attaches to, and the tolerances differ.
+    """
+    truth = [annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 120, 120)]
+    root = build(tmp_path, [truth])
+    stub = StubDetector([[detection(SymbolClass.CROSS_NOTEHEAD, 105, 101, 125, 121)]])
+
+    report = ev.evaluate(Path("u.pt"), root, detector=stub, iou_threshold=0.3)
+
+    row = next(r for r in report["per_class"] if r["name"] == "cross_notehead")
+    assert row["centroid"]["dx_median"] == pytest.approx(5.0)
+    assert row["centroid"]["dy_median"] == pytest.approx(1.0)
+
+
+def test_a_class_inside_the_snap_budget_passes(tmp_path):
+    """2 px of vertical error is inside the 2.8 px snap absorbs."""
+    truth = [annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 120, 120)]
+    root = build(tmp_path, [truth])
+    stub = StubDetector([[detection(SymbolClass.CROSS_NOTEHEAD, 100, 102, 120, 122)]])
+
+    report = ev.evaluate(Path("u.pt"), root, detector=stub)
+
+    assert report["centroid_pass"]["failing"] == []
+    assert report["centroid_pass"]["passing"] == 1
+
+
+def test_a_class_outside_the_snap_budget_is_named(tmp_path):
+    """5 px of vertical error puts snap outside its tolerance, so the centroid
+    resolves to the wrong staff position or to None.
+    """
+    truth = [annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 130, 130)]
+    root = build(tmp_path, [truth])
+    stub = StubDetector([[detection(SymbolClass.CROSS_NOTEHEAD, 100, 105, 130, 135)]])
+
+    report = ev.evaluate(Path("u.pt"), root, detector=stub, iou_threshold=0.3)
+
+    failing = report["centroid_pass"]["failing"]
+    assert [row["name"] for row in failing] == ["cross_notehead"]
+
+
+def test_the_pass_threshold_follows_the_staff_spacing(tmp_path):
+    """The same error passes at a large engraving and fails at a small one."""
+    truth = [annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 130, 130)]
+    root = build(tmp_path, [truth])
+    boxes = [detection(SymbolClass.CROSS_NOTEHEAD, 100, 104, 130, 134)]
+
+    tight = ev.evaluate(
+        Path("u.pt"), root, detector=StubDetector([boxes]), iou_threshold=0.3,
+        staff_spacing=14.0,
+    )
+    loose = ev.evaluate(
+        Path("u.pt"), root, detector=StubDetector([boxes]), iou_threshold=0.3,
+        staff_spacing=28.0,
+    )
+
+    assert tight["centroid_pass"]["failing"]
+    assert not loose["centroid_pass"]["failing"]
+
+
+def test_an_unmatched_class_reports_no_centroid(tmp_path):
+    truth = [annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 120, 120)]
+    root = build(tmp_path, [truth])
+
+    report = ev.evaluate(Path("u.pt"), root, detector=StubDetector([[]]))
+
+    row = next(r for r in report["per_class"] if r["name"] == "cross_notehead")
+    assert row["centroid"]["matched"] == 0
+
+
+def test_the_report_prints_the_application_sections(tmp_path, capsys):
+    truth = [
+        annotation(SymbolClass.AUGMENTATION_DOT, 200, 200, 206, 206),
+        annotation(SymbolClass.CROSS_NOTEHEAD, 100, 100, 120, 120),
+    ]
+    root = build(tmp_path, [truth])
+    stub = StubDetector([[detection(SymbolClass.AUGMENTATION_DOT, 200, 200, 206, 206),
+                          detection(SymbolClass.CROSS_NOTEHEAD, 100, 100, 120, 120)]])
+
+    ev.print_report(ev.evaluate(Path("u.pt"), root, detector=stub))
+
+    out = capsys.readouterr().out
+    assert "SMALL CLASSES" in out
+    assert "CENTROID ERROR vs what the application needs" in out

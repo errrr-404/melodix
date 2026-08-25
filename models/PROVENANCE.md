@@ -253,6 +253,39 @@ construction. `fliplr=0.0` is justified on domain grounds — mirrored notation
 cannot occur — and stands regardless of what the number does. Answering it needs
 real pages.
 
+## mAP50-95 under-reports the small classes. Do not read it as model quality.
+
+`augmentation_dot` at 0.503 and `staccato` at 0.687 are the two weakest classes
+in the baseline. A large part of that number is the metric, not the model.
+
+mAP50-95 averages ten IoU thresholds from 0.50 to 0.95. For two boxes of side
+`d` offset by `delta`, IoU clears a threshold `t` only while
+`delta < d(1-t)/(1+t)`. These glyphs reach the model at 5.49 px:
+
+| IoU threshold | budget for a 5.49 px glyph |
+|---|---|
+| 0.50 | 1.83 px |
+| 0.75 | 0.78 px |
+| 0.90 | **0.29 px** |
+
+YOLOv8's finest head is P3 at stride 8. Roughly half the thresholds mAP50-95
+averages are therefore **unavailable at this glyph size regardless of detector
+quality**, and a perfect detector would still score well under 1.0. The number
+is partly measuring the metric's own ceiling.
+
+**The metric is also misaligned with the product.** Stage 3 does two things with
+a detection: takes its centroid into `StaffGrid.snap`, and associates it with a
+nearby notehead. At 14 px staff spacing, snap's 0.4-position tolerance is
+**+/-2.8 px** vertically; horizontal association across noteheads ~40 px apart is
+looser still. So the application needs about 2.8 px where IoU 0.75 demands 0.63 px
+— a target four times stricter than anything downstream cares about, applied to
+the classes least able to meet it.
+
+`scripts/evaluate_real.py` now reports both: AP50 for the small classes on its
+own, and per-class centroid error in pixels against the snap budget, derived
+from the geometry module rather than hard-coded. Read those for whether the
+model is good enough. Read mAP for whether it is improving.
+
 ## Retrain status: pending, blocked on GPU access
 
 `stage2_corrected_aug` has **not been run.** This machine's torch is a CPU-only
@@ -276,6 +309,63 @@ into the checkpoint's `train_args`:
 
 That is the exact drift that produced the baseline's stock augmentation, now
 closed and checked end to end rather than assumed.
+
+## First look at a degraded page: Stage 1 is the fragile stage, not Stage 2
+
+No real page exists in the repo yet, so this was measured on the closest
+available proxy — a synthetic page put through `scripts/degrade.py` and
+rendered to PDF, read back through `melodix.ingest`. It is not a real scan and
+does not substitute for one. It is the first time anything has been looked at
+rather than scored.
+
+**Stage 2 transferred better than expected.** 504 detections, median confidence
+0.55, with percussion clefs at 0.95, time signatures, and round and cross
+noteheads at 0.84-0.93 sitting correctly on their staff positions.
+
+**Stage 1 found zero staves on the same page.** Not degraded — zero. The staff
+lines are plainly visible in the image, and the detector read symbols off them
+successfully, but `detect_staff_grids` returned an empty list. Everything
+downstream of Stage 1 depends on that grid, so on this page the pipeline has no
+coordinate system at all.
+
+Isolated by running each degradation effect alone against staff detection:
+
+| effect alone | staves found (5 expected) |
+|---|---|
+| ink, rotate, perspective, blur, texture, brightness, gamma, jpeg | 5 |
+| **speckle** | **1** |
+
+Cumulatively in effect order, detection holds at 5 through blur, drops to 1 once
+texture is added, and reaches **0** once brightness is applied.
+
+The mechanism is that `isolate_horizontal_runs` opens with a kernel 35% of the
+page width. A morphological opening needs an unbroken run, so a single
+salt-noise pixel inside a staff line breaks it and the opening erases the whole
+line.
+
+Measured across twelve noise seeds, it degrades stochastically rather than
+cleanly — it depends on whether a speck happens to land on a line:
+
+| salt-and-pepper density | full 5/5 | partial | none |
+|---|---|---|---|
+| 0.0000 | 12/12 | 0 | 0 |
+| 0.0010 | 11/12 | 1 | 0 |
+| 0.0025 (degrade.py default) | 8/12 | **4** | 0 |
+| 0.0050 | 4/12 | 8 | 0 |
+| 0.0100 | 0/12 | 12 | 0 |
+
+Losing one staff on an ensemble page means losing one player's part, silently.
+
+A morphological closing before the opening recovers it in a bench probe — a 3x1
+or 5x1 close restores 5/5 staves on a page where the opening alone found 5 but
+the noisy variant found fewer. **Not implemented**: it is a change to Stage 1's
+detection path, it needs its own tests and a check that it does not fuse
+adjacent lines at small engraving sizes, and this phase was scoped to
+diagnostics. Recorded as the most promising next fix.
+
+This inverts the project's working assumption. Four phases of effort have gone
+into Stage 2's augmentation. On the first page anyone looked at, Stage 2 worked
+and Stage 1 did not.
 
 ## Label integrity of the current dataset
 

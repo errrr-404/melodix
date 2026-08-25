@@ -64,6 +64,34 @@ CONFUSABLE_PAIR = ("augmentation_dot", "staccato")
 #: IoU at which a prediction is credited to a ground-truth box.
 DEFAULT_IOU = 0.5
 
+#: A class whose median ground-truth box is smaller than this, on its shorter
+#: side, is reported separately. Measured per corpus rather than listed, so the
+#: set adapts when the engraving size does.
+SMALL_CLASS_PX = 8.0
+
+#: Typical staff line spacing in the corpus, in pixels. Only used to turn
+#: snap's tolerance into a pixel budget; override it for a corpus engraved
+#: at a different size.
+DEFAULT_STAFF_SPACING_PX = 14.0
+
+
+def snap_tolerance_px(line_spacing: float = DEFAULT_STAFF_SPACING_PX) -> float:
+    """Vertical centroid error Stage 1 can absorb, in pixels.
+
+    Read from :meth:`~melodix.geometry.staff.StaffGrid.snap` rather than
+    hard-coded, so it tracks the geometry module. One staff position is half a
+    line spacing, and snap accepts a centroid within ``tolerance`` positions of
+    an integer before it gives up and returns ``None``.
+
+    At the default 14 px spacing that is +/-2.8 px.
+    """
+    import inspect
+
+    from melodix.geometry.staff import StaffGrid
+
+    tolerance = inspect.signature(StaffGrid.snap).parameters["tolerance"].default
+    return float(tolerance) * (line_spacing / 2.0)
+
 
 @dataclass(frozen=True, slots=True)
 class Box:
@@ -100,6 +128,11 @@ class ClassTally:
     false_positives: int = 0
     false_negatives: int = 0
     scores: list[tuple[float, bool]] = field(default_factory=list)
+    #: Signed centroid error per matched detection, in pixels.
+    dx: list[float] = field(default_factory=list)
+    dy: list[float] = field(default_factory=list)
+    #: Shorter side of each ground-truth box, for the small-class split.
+    truth_sizes: list[float] = field(default_factory=list)
 
     @property
     def precision(self) -> float:
@@ -212,10 +245,19 @@ class Evaluation:
         self.pages += 1
         pairs, spare, missed = match_boxes(truth, predictions, iou_threshold)
 
-        for _, prediction in pairs:
+        for actual, prediction in pairs:
             tally = self.tallies[prediction.class_id]
             tally.true_positives += 1
             tally.scores.append((prediction.confidence, True))
+            # What the application actually consumes: how far the centroid moved.
+            tally.dx.append(
+                abs((prediction.x_min + prediction.x_max) / 2
+                    - (actual.x_min + actual.x_max) / 2)
+            )
+            tally.dy.append(
+                abs((prediction.y_min + prediction.y_max) / 2
+                    - (actual.y_min + actual.y_max) / 2)
+            )
             self.confusion[(prediction.class_id, prediction.class_id)] += 1
 
         for prediction in spare:
@@ -237,6 +279,11 @@ class Evaluation:
             self.tallies[box.class_id].false_negatives += 1
             self.confusion[(box.class_id, -1)] += 1
 
+        for box in truth:
+            self.tallies[box.class_id].truth_sizes.append(
+                min(box.x_max - box.x_min, box.y_max - box.y_min)
+            )
+
     def per_class(self) -> list[dict[str, Any]]:
         """Return one row per class, ordered by class id."""
         names = class_names()
@@ -251,6 +298,14 @@ class Evaluation:
                     "precision": tally.precision,
                     "recall": tally.recall,
                     "ap50": average_precision(tally.scores, tally.support),
+                    "median_box_px": (
+                        float(np.median(tally.truth_sizes)) if tally.truth_sizes else 0.0
+                    ),
+                    "is_small": bool(
+                        tally.truth_sizes
+                        and float(np.median(tally.truth_sizes)) < SMALL_CLASS_PX
+                    ),
+                    "centroid": _centroid_stats(tally),
                 }
             )
         return rows
@@ -266,6 +321,52 @@ class Evaluation:
             "map50": sum(r["ap50"] for r in rows) / len(rows),
             "classes": len(rows),
         }
+
+
+def _centroid_verdict(rows: list[dict[str, Any]], tolerance: float) -> dict[str, Any]:
+    """Judge vertical centroid error against what Stage 1 can absorb.
+
+    This is the number the application cares about, and it is not mAP. Stage 3
+    feeds a detection's row to snap, which accepts anything within the
+    tolerance and returns None outside it. A class whose 90th-percentile
+    vertical error clears that budget is good enough for the product however
+    its IoU-based scores read.
+    """
+    judged = [r for r in rows if r["centroid"].get("matched")]
+    if not judged:
+        return {"classes": 0}
+
+    failing = [
+        {"name": r["name"], "dy_p90": r["centroid"]["dy_p90"]}
+        for r in judged
+        if r["centroid"]["dy_p90"] > tolerance
+    ]
+    return {
+        "classes": len(judged),
+        "tolerance_px": tolerance,
+        "passing": len(judged) - len(failing),
+        "failing": failing,
+        "worst_dy_p90": max(r["centroid"]["dy_p90"] for r in judged),
+    }
+
+
+def _centroid_stats(tally: ClassTally) -> dict[str, float]:
+    """Summarise how far matched centroids sat from truth.
+
+    Vertical and horizontal are reported apart because the application uses
+    them for different things with very different tolerances: the row goes to
+    :meth:`~melodix.geometry.staff.StaffGrid.snap`, the column decides which
+    notehead a modifier attaches to.
+    """
+    if not tally.dy:
+        return {"matched": 0}
+    return {
+        "matched": len(tally.dy),
+        "dy_median": float(np.median(tally.dy)),
+        "dy_p90": float(np.percentile(tally.dy, 90)),
+        "dx_median": float(np.median(tally.dx)),
+        "dx_p90": float(np.percentile(tally.dx, 90)),
+    }
 
 
 def load_manifest(root: Path) -> set[str]:
@@ -322,6 +423,7 @@ def evaluate(
     image_size: int = 1280,
     device: str | None = None,
     detector: Any = None,
+    staff_spacing: float = DEFAULT_STAFF_SPACING_PX,
 ) -> dict[str, Any]:
     """Score a checkpoint over a directory of annotated pages.
 
@@ -333,6 +435,8 @@ def evaluate(
         confidence: Detections below this are discarded.
         image_size: Inference resolution.
         device: Passed through to the detector.
+        staff_spacing: Typical staff line spacing in pixels, which sets the
+            centroid pass threshold via :func:`snap_tolerance_px`.
         detector: An object with ``detect(image) -> PageDetections``. Injected
             by the tests so metric computation runs without a checkpoint; the
             real one is built here when omitted.
@@ -388,6 +492,9 @@ def evaluate(
         target.add_page(truth, predictions, iou_threshold)
 
     names = class_names()
+    rows = overall.per_class()
+    small = [r for r in rows if r["is_small"] and r["support"]]
+    tolerance = snap_tolerance_px(staff_spacing)
     return {
         "weights": str(weights),
         "data": str(root),
@@ -396,7 +503,17 @@ def evaluate(
         "synthetic_source": looks_synthetic(root),
         "pages": overall.pages,
         "aggregate": overall.aggregate(),
-        "per_class": overall.per_class(),
+        "per_class": rows,
+        "staff_spacing_px": staff_spacing,
+        "snap_tolerance_px": tolerance,
+        "small_classes": {
+            "threshold_px": SMALL_CLASS_PX,
+            "classes": [r["name"] for r in small],
+            "mean_ap50": (
+                float(np.mean([r["ap50"] for r in small])) if small else 0.0
+            ),
+        },
+        "centroid_pass": _centroid_verdict(rows, tolerance),
         "ensemble": {
             "pages": ensemble.pages,
             "aggregate": ensemble.aggregate(),
@@ -455,12 +572,52 @@ def print_report(report: dict[str, Any]) -> None:
         if agg["map50"] < single["map50"] * 0.9:
             print("  ENSEMBLE IS MEASURABLY WORSE than single-staff.")
 
-    print("\nPER CLASS, weakest first")
+    small = report.get("small_classes", {})
+    if small.get("classes"):
+        print(
+            f"\nSMALL CLASSES (median box under {small['threshold_px']:.0f} px), "
+            f"AP50 shown apart from the localisation ceiling"
+        )
+        print(f"  mean AP50 {small['mean_ap50']:.4f} over {len(small['classes'])} classes")
+        for row in report["per_class"]:
+            if row["is_small"] and row["support"]:
+                print(
+                    f"    AP50 {row['ap50']:.3f}  box {row['median_box_px']:.1f} px  "
+                    f"n={row['support']:<6d} {row['name']}"
+                )
+        print("  mAP50-95 under-reports these. See PROVENANCE.md for the arithmetic.")
+
+    passed = report.get("centroid_pass", {})
+    if passed.get("classes"):
+        print("\nCENTROID ERROR vs what the application needs")
+        print(
+            f"  Stage 1 snap absorbs +/-{passed['tolerance_px']:.2f} px vertically at "
+            f"{report['staff_spacing_px']:.0f} px staff spacing"
+        )
+        print(
+            f"  {passed['passing']} of {passed['classes']} matched classes keep their "
+            f"90th-percentile vertical error inside it"
+        )
+        if passed["failing"]:
+            print("  outside it:")
+            for row in sorted(passed["failing"], key=lambda r: -r["dy_p90"])[:10]:
+                print(f"    dy_p90 {row['dy_p90']:6.2f} px  {row['name']}")
+        else:
+            print("  every matched class is inside the budget.")
+
+    print("\nPER CLASS, weakest first  (dy and dx shown as median/p90, in pixels)")
     for row in sorted(report["per_class"], key=lambda r: (r["support"] == 0, r["ap50"])):
         note = "  (no ground truth)" if row["support"] == 0 else ""
+        centroid = row["centroid"]
+        moved = (
+            f"  dy {centroid['dy_median']:.2f}/{centroid['dy_p90']:.2f}"
+            f"  dx {centroid['dx_median']:.2f}/{centroid['dx_p90']:.2f}"
+            if centroid.get("matched")
+            else ""
+        )
         print(
             f"  AP50 {row['ap50']:.3f}  P {row['precision']:.3f}  R {row['recall']:.3f}  "
-            f"n={row['support']:<5d} {row['name']}{note}"
+            f"n={row['support']:<5d} {row['name']}{note}{moved}"
         )
 
     print("\nCONFUSION, most frequent first")
@@ -494,6 +651,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--staff-spacing",
+        type=float,
+        default=DEFAULT_STAFF_SPACING_PX,
+        help="typical staff line spacing in px; sets the centroid pass threshold",
+    )
     parser.add_argument("--json", type=Path, help="write the report here")
     args = parser.parse_args(argv)
 
@@ -505,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         confidence=args.conf,
         image_size=args.imgsz,
         device=args.device,
+        staff_spacing=args.staff_spacing,
     )
     print_report(report)
 

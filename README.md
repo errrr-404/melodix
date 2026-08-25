@@ -140,5 +140,9 @@ pytest --cov=melodix --cov-report=term-missing
   - `scale` derived from measured glyph size and localisation budget (0.5 → 0.20)
   - ultralytics patch surface enumerated in `docs/ultralytics-patches.md`; risky patches wrapped
   - **Retrain pending: needs GPU access. See `models/PROVENANCE.md`.**
+- [x] **Phase 2.8** Look at a real page
+  - `scripts/inspect_real.py` — annotated pages, Stage 1 overlay, no ground truth needed
+  - `evaluate_real.py` reports small-class AP50 and centroid error against Stage 1's snap budget
+  - **Finding: Stage 1 staff detection fails on speckled pages.** See `models/PROVENANCE.md`.
 - [ ] **Phase 3** Reconstruction and MIDI
 - [ ] **Phase 4** Synthesis and encoding
