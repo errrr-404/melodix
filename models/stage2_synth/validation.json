@@ -1,0 +1,182 @@
+{
+  "weights": "models\\stage2_synth\\weights\\best.pt",
+  "data": "datasets\\melodix_synth\\data.yaml",
+  "class_order_matches": true,
+  "mismatches": [],
+  "aggregate": {
+    "map50": 0.9887581277479055,
+    "map50_95": 0.9118169635161331,
+    "precision": 0.9946796234370845,
+    "recall": 0.9841907993742811
+  },
+  "per_class": [
+    {
+      "index": 0,
+      "name": "round_notehead",
+      "map50_95": 0.9807759066128467,
+      "had_instances": true
+    },
+    {
+      "index": 1,
+      "name": "hollow_notehead",
+      "map50_95": 0.9677929503176257,
+      "had_instances": true
+    },
+    {
+      "index": 2,
+      "name": "cross_notehead",
+      "map50_95": 0.9945336179880411,
+      "had_instances": true
+    },
+    {
+      "index": 3,
+      "name": "circle_cross_notehead",
+      "map50_95": 0.9882644925480157,
+      "had_instances": true
+    },
+    {
+      "index": 4,
+      "name": "diamond_notehead",
+      "map50_95": 0.9878895483035309,
+      "had_instances": true
+    },
+    {
+      "index": 5,
+      "name": "triangle_notehead",
+      "map50_95": 0.9799163801873274,
+      "had_instances": true
+    },
+    {
+      "index": 6,
+      "name": "slash_notehead",
+      "map50_95": 0.9609652794194405,
+      "had_instances": true
+    },
+    {
+      "index": 7,
+      "name": "rest_whole",
+      "map50_95": 0.8986754886564705,
+      "had_instances": true
+    },
+    {
+      "index": 8,
+      "name": "rest_half",
+      "map50_95": 0.8991396858216362,
+      "had_instances": true
+    },
+    {
+      "index": 9,
+      "name": "rest_quarter",
+      "map50_95": 0.9588852218112652,
+      "had_instances": true
+    },
+    {
+      "index": 10,
+      "name": "rest_eighth",
+      "map50_95": 0.9456076960099169,
+      "had_instances": true
+    },
+    {
+      "index": 11,
+      "name": "rest_sixteenth",
+      "map50_95": 0.9498683558422195,
+      "had_instances": true
+    },
+    {
+      "index": 12,
+      "name": "flag_eighth",
+      "map50_95": 0.9118807193187422,
+      "had_instances": true
+    },
+    {
+      "index": 13,
+      "name": "flag_sixteenth",
+      "map50_95": 0.9250669233964371,
+      "had_instances": true
+    },
+    {
+      "index": 14,
+      "name": "beam",
+      "map50_95": 0.9820811047478311,
+      "had_instances": true
+    },
+    {
+      "index": 15,
+      "name": "augmentation_dot",
+      "map50_95": 0.502945731673187,
+      "had_instances": true
+    },
+    {
+      "index": 16,
+      "name": "accent",
+      "map50_95": 0.9625615214217005,
+      "had_instances": true
+    },
+    {
+      "index": 17,
+      "name": "marcato",
+      "map50_95": 0.950827726458596,
+      "had_instances": true
+    },
+    {
+      "index": 18,
+      "name": "staccato",
+      "map50_95": 0.6873314236038867,
+      "had_instances": true
+    },
+    {
+      "index": 19,
+      "name": "ghost_note",
+      "map50_95": 0.9889966073986536,
+      "had_instances": true
+    },
+    {
+      "index": 20,
+      "name": "open_modifier",
+      "map50_95": 0.895087186444686,
+      "had_instances": true
+    },
+    {
+      "index": 21,
+      "name": "closed_modifier",
+      "map50_95": 0.8985606321422136,
+      "had_instances": true
+    },
+    {
+      "index": 22,
+      "name": "grace_note",
+      "map50_95": 0.9156556250026716,
+      "had_instances": true
+    },
+    {
+      "index": 23,
+      "name": "percussion_clef",
+      "map50_95": 0.9949999999999999,
+      "had_instances": true
+    },
+    {
+      "index": 24,
+      "name": "time_signature",
+      "map50_95": 0.8722087741316462,
+      "had_instances": true
+    },
+    {
+      "index": 25,
+      "name": "repeat_dots",
+      "map50_95": 0.8379338113481968,
+      "had_instances": true
+    },
+    {
+      "index": 26,
+      "name": "repeat_measure",
+      "map50_95": 0.9059592796977654,
+      "had_instances": true
+    },
+    {
+      "index": 27,
+      "name": "tie_slur",
+      "map50_95": 0.7864632881471733,
+      "had_instances": true
+    }
+  ]
+}

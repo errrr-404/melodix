@@ -41,10 +41,21 @@ melodix/
 ```bash
 pip install -e ".[dev]"          # Stages 1 and 3
 pip install -e ".[dev,vision]"   # adds torch + ultralytics
+python scripts/fix_opencv.py     # required after [vision]: see below
 pip install -e ".[dev,audio]"    # adds pyfluidsynth + pydub
 ```
 
 Stage 4 also needs system binaries: `libfluidsynth` and `ffmpeg`.
+
+### OpenCV
+
+ultralytics hard-requires `opencv-python` (the GUI build, which pulls Qt and
+breaks headless Docker/CI); this project requires `opencv-python-headless`. Both
+ship the same `cv2` package and overlap on 52 files, so installing the `vision`
+extra leaves both present and whichever unpacked last wins. pip has no
+dependency-override mechanism, so `pyproject.toml` cannot prevent this. Run
+`python scripts/fix_opencv.py` after installing; `--check` verifies the state.
+Installing with `uv` needs no fix — the override is declared in `[tool.uv]`.
 
 ## Staff position convention
 
@@ -91,6 +102,12 @@ pytest --cov=melodix --cov-report=term-missing
 - [x] **Phase 1.3** `geometry/barlines.py` — measure segmentation
 - [x] **Phase 1.4** `geometry/systems.py` — ensemble system grouping
 - [x] **Phase 2** Symbol recognition — `vision/labels.py`, `vision/dataset.py`, `vision/detector.py`
-  - Pretraining checkpoint only: synthetic data, 2 epochs. Needs real scans before shipping.
+  - Checkpoint: YOLOv8s, 30 epochs on Colab T4, synthetic data only. See `models/PROVENANCE.md`.
+  - Pretraining only. No real page has been shown to this model, in training or evaluation.
+- [x] **Phase 2.5** Reality-check tooling
+  - `ingest/loader.py` — PDF and image to page arrays
+  - `scripts/degrade.py` — scan-realistic degradation, boxes carried through geometry
+  - `scripts/evaluate_real.py` — per-class + ensemble-slice metrics on real pages
+  - `scripts/validate_yolo.py`, `scripts/fix_opencv.py`
 - [ ] **Phase 3** Reconstruction and MIDI
 - [ ] **Phase 4** Synthesis and encoding

@@ -33,6 +33,19 @@ dependencies = [
 
 [project.optional-dependencies]
 # Stage 2: symbol recognition. Drags in torch + torchvision.
+#
+# NOTE ON OPENCV. ultralytics hard-requires `opencv-python` (the GUI build,
+# which pulls Qt and breaks headless Docker/CI). This project requires
+# `opencv-python-headless`. The two ship the same `cv2` package and overlap on
+# 52 files, so installing both leaves whichever landed last in place -- a silent
+# coin flip. pip has no dependency-override mechanism, so pyproject alone cannot
+# prevent it. After installing this extra, run:
+#
+#     python scripts/fix_opencv.py
+#
+# which removes both and reinstalls headless only. `pip check` will then report
+# ultralytics' opencv-python requirement as unmet; that is metadata-only, the
+# cv2 module is present and API-identical.
 vision = [
     "ultralytics>=8.2",
     "torch>=2.2",
@@ -60,6 +73,11 @@ Issues = "https://github.com/melodix/melodix/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/melodix"]
+
+# uv, unlike pip, can express the opencv override declaratively. Harmless when
+# the project is installed with pip; correct when it is installed with uv.
+[tool.uv]
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 # ---------------------------------------------------------------- pytest ----
 

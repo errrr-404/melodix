@@ -20,15 +20,21 @@ dist/
 htmlcov/
 coverage.xml
 
-# Large binary assets, tracked out of band
-models/
+# Large binary assets, tracked out of band. The provenance record and the
+# metrics report are small and ARE tracked: they are what the weights mean.
+models/*
+!models/PROVENANCE.md
+!models/*/
+models/*/**
+!models/*/validation.json
 assets/soundfonts/
 *.sf2
 *.pt
 *.onnx
 
-# Training runs
+# Training runs, including the abandoned local CPU run kept for reference
 runs/
+runs_local_cpu_abandoned/
 
 # Generated datasets, reproducible from their seed
 datasets/
