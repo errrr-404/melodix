@@ -29,16 +29,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from melodix.vision.labels import NUM_CLASSES, SymbolClass, class_names
+from melodix.vision.labels import (
+    NUM_CLASSES,
+    SymbolClass,
+    class_names,
+    verify_model_classes,
+)
 
 __all__ = [
     "IMAGE_SUFFIXES",
     "Annotation",
     "BoundingBox",
+    "DataConfig",
     "DatasetSplit",
     "LabeledImage",
     "class_distribution",
+    "find_unlabelled_images",
     "label_path_for_image",
+    "parse_data_yaml",
     "parse_label_file",
     "split_dataset",
     "write_data_yaml",
@@ -506,3 +514,160 @@ def write_data_yaml(
         f"{names}\n"
     )
     path.write_text(body, encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Reading a dataset descriptor
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class DataConfig:
+    """A parsed ``data.yaml``.
+
+    Attributes:
+        root: Directory the split paths resolve against.
+        train_dir: Training images, relative to ``root``.
+        val_dir: Validation images, relative to ``root``.
+        names: Class names in index order, as the file declares them.
+    """
+
+    root: Path
+    train_dir: str
+    val_dir: str
+    names: tuple[str, ...]
+
+    @property
+    def train_images(self) -> Path:
+        """Absolute path to the training images."""
+        return self.root / self.train_dir
+
+    @property
+    def val_images(self) -> Path:
+        """Absolute path to the validation images."""
+        return self.root / self.val_dir
+
+
+def parse_data_yaml(path: Path, verify_classes: bool = True) -> DataConfig:
+    """Read a ``data.yaml`` and, by default, check its classes against the schema.
+
+    Parsed by hand rather than with a YAML library: the file this project reads
+    is the one :func:`write_data_yaml` produces, and a parser for that shape is
+    a dozen lines against a dependency in the base install.
+
+    Args:
+        path: The descriptor to read.
+        verify_classes: Check the declared class list against
+            :mod:`melodix.vision.labels`. Leave this on unless deliberately
+            inspecting a foreign dataset.
+
+    Returns:
+        The parsed configuration.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If a required key is missing or ``nc`` disagrees with the
+            number of names declared.
+        ClassMismatchError: If ``verify_classes`` and the names have drifted
+            from the schema.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"no dataset descriptor at {path}")
+
+    scalars: dict[str, str] = {}
+    names: list[tuple[int, str]] = []
+    in_names = False
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].rstrip() if not raw.lstrip().startswith("#") else ""
+        if not line.strip():
+            continue
+
+        if line.startswith((" ", "\t")):
+            if in_names and ":" in line:
+                key, value = line.split(":", 1)
+                try:
+                    names.append((int(key.strip()), value.strip()))
+                except ValueError:
+                    raise ValueError(
+                        f"{path}: class keys under 'names' must be integers, got {key.strip()!r}"
+                    ) from None
+            continue
+
+        in_names = False
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if key == "names":
+            in_names = True
+            continue
+        scalars[key] = value
+
+    for required in ("path", "train", "val"):
+        if required not in scalars:
+            raise ValueError(f"{path}: missing required key {required!r}")
+
+    if not names:
+        raise ValueError(f"{path}: declares no class names")
+
+    ordered = [name for _, name in sorted(names)]
+    if [index for index, _ in sorted(names)] != list(range(len(ordered))):
+        raise ValueError(f"{path}: class indices are not contiguous from 0")
+
+    declared_count = scalars.get("nc")
+    if declared_count is not None and int(declared_count) != len(ordered):
+        raise ValueError(
+            f"{path}: declares nc={declared_count} but lists {len(ordered)} names"
+        )
+
+    if verify_classes:
+        verify_model_classes(ordered)
+
+    return DataConfig(
+        root=Path(scalars["path"]),
+        train_dir=scalars["train"],
+        val_dir=scalars["val"],
+        names=tuple(ordered),
+    )
+
+
+def find_unlabelled_images(images_dir: Path, labels_dir: Path | None = None) -> tuple[Path, ...]:
+    """Return images with no matching label file.
+
+    Worth checking before training rather than after: ultralytics reads a
+    missing label file as a deliberate negative example and trains on it
+    happily, so a broken export shows up only as a disappointing mAP.
+
+    Args:
+        images_dir: Directory of page images.
+        labels_dir: Where the ``.txt`` files live. Derived from ``images_dir``
+            by the usual ``images`` to ``labels`` swap when omitted.
+
+    Returns:
+        The unpaired images, sorted.
+
+    Raises:
+        FileNotFoundError: If the image directory does not exist.
+    """
+    if not images_dir.is_dir():
+        raise FileNotFoundError(f"no image directory at {images_dir}")
+
+    if labels_dir is None:
+        parts = list(images_dir.parts)
+        for index in range(len(parts) - 1, -1, -1):
+            if parts[index] == "images":
+                parts[index] = "labels"
+                break
+        else:
+            raise FileNotFoundError(
+                f"cannot derive a labels directory from {images_dir}; pass labels_dir"
+            )
+        labels_dir = Path(*parts)
+
+    images = [
+        path
+        for path in sorted(images_dir.iterdir())
+        if path.suffix.lower() in IMAGE_SUFFIXES
+    ]
+    return tuple(path for path in images if not (labels_dir / f"{path.stem}.txt").exists())

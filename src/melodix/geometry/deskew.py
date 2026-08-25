@@ -290,7 +290,7 @@ def rotate_image(
     if interp is None:
         try:
             uniq = np.unique(image)
-            if uniq.size <= 2 and set(int(x) for x in uniq.tolist()).issubset({0, 255}):
+            if uniq.size <= 2 and {int(x) for x in uniq.tolist()}.issubset({0, 255}):
                 interp = cv2.INTER_NEAREST
             else:
                 interp = cv2.INTER_LINEAR

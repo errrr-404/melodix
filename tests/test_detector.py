@@ -22,7 +22,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from melodix.vision.dataset import BoundingBox
 from melodix.vision.detector import (
     Detection,
     DetectorConfig,
@@ -30,7 +29,12 @@ from melodix.vision.detector import (
     PageDetections,
     SymbolDetector,
 )
-from melodix.vision.labels import NUM_CLASSES, SymbolCategory, SymbolClass
+from melodix.vision.labels import (
+    NUM_CLASSES,
+    SymbolCategory,
+    SymbolClass,
+    verify_model_classes,
+)
 
 PAGE_W = 800
 PAGE_H = 600
@@ -184,6 +188,78 @@ def test_a_missing_checkpoint_is_reported_before_the_model_is_built(tmp_path):
     with pytest.raises(FileNotFoundError, match="no checkpoint at"):
         detector.load()
     assert built == []
+
+
+def test_a_checkpoint_with_a_drifted_class_list_is_refused_on_load(tmp_path):
+    """The guard, exercised through the detector rather than beside it.
+
+    A checkpoint whose class order differs raises nothing at inference — it
+    reports the wrong symbol for every detection. Loading must refuse it before
+    a single detection is returned.
+    """
+    from melodix.vision.labels import ClassMismatchError, class_names
+
+    drifted = class_names()
+    drifted[2], drifted[3] = drifted[3], drifted[2]
+
+    model = FakeModel()
+    model.names = dict(enumerate(drifted))
+    weights = tmp_path / "drifted.pt"
+    weights.write_bytes(b"x")
+    detector = SymbolDetector(
+        DetectorConfig(weights=weights), model_factory=lambda path, cfg: model
+    )
+
+    with pytest.raises(ClassMismatchError):
+        detector.load()
+
+
+def test_a_drifted_checkpoint_returns_no_detections(tmp_path):
+    """Refusal must happen before any detection escapes, not after."""
+    from melodix.vision.labels import ClassMismatchError, class_names
+
+    drifted = class_names()
+    drifted[0] = "cowbell"
+    model = FakeModel([FakeResult([(*CENTRE_BOX, 0.99, 0)])])
+    model.names = dict(enumerate(drifted))
+    weights = tmp_path / "drifted.pt"
+    weights.write_bytes(b"x")
+    detector = SymbolDetector(
+        DetectorConfig(weights=weights), model_factory=lambda path, cfg: model
+    )
+
+    with pytest.raises(ClassMismatchError):
+        detector.detect(page())
+    assert model.calls == []
+
+
+def test_the_class_check_can_be_turned_off_for_a_foreign_checkpoint(tmp_path):
+    """Deliberate escape hatch, off by default."""
+    from melodix.vision.labels import class_names
+
+    drifted = class_names()
+    drifted[0] = "cowbell"
+    model = FakeModel()
+    model.names = dict(enumerate(drifted))
+    weights = tmp_path / "drifted.pt"
+    weights.write_bytes(b"x")
+    detector = SymbolDetector(
+        DetectorConfig(weights=weights, verify_classes=False),
+        model_factory=lambda path, cfg: model,
+    )
+
+    detector.load()
+
+    assert detector.is_loaded
+
+
+def test_a_model_without_a_class_list_is_tolerated(tmp_path):
+    """The injected stubs in this file carry no .names; that must not break."""
+    detector, _ = detector_with(tmp_path=tmp_path)
+
+    detector.load()
+
+    assert detector.is_loaded
 
 
 def test_the_missing_extra_error_names_the_install_command():
@@ -389,15 +465,16 @@ def test_a_detection_carries_its_class_and_score(tmp_path):
     assert found.detections[0].confidence == pytest.approx(0.9)
 
 
-def test_normalised_corners_become_a_centre_and_size(tmp_path):
+def test_normalised_corners_become_absolute_pixels(tmp_path):
+    """The model speaks fractions; everything downstream speaks pixels."""
     detector, _ = detector_with(rows=[(0.2, 0.4, 0.6, 0.8, 0.9, 0)], tmp_path=tmp_path)
 
     hit = detector.detect(page()).detections[0]
 
-    assert hit.box.cx == pytest.approx(0.4)
-    assert hit.box.cy == pytest.approx(0.6)
-    assert hit.box.w == pytest.approx(0.4)
-    assert hit.box.h == pytest.approx(0.4)
+    assert hit.x_min == pytest.approx(0.2 * PAGE_W)
+    assert hit.y_min == pytest.approx(0.4 * PAGE_H)
+    assert hit.x_max == pytest.approx(0.6 * PAGE_W)
+    assert hit.y_max == pytest.approx(0.8 * PAGE_H)
 
 
 def test_the_page_size_comes_back_with_the_detections(tmp_path):
@@ -439,8 +516,8 @@ def test_inverted_corners_are_normalised(tmp_path):
 
     hit = detector.detect(page()).detections[0]
 
-    assert hit.box.cx == pytest.approx(0.4)
-    assert hit.box.w == pytest.approx(0.4)
+    assert hit.centroid[0] == pytest.approx(0.4 * PAGE_W)
+    assert hit.width == pytest.approx(0.4 * PAGE_W)
 
 
 def test_a_ragged_result_is_rejected(tmp_path):
@@ -475,8 +552,8 @@ def test_a_box_spilling_past_the_page_edge_is_clamped(tmp_path):
 
     hit = detector.detect(page()).detections[0]
 
-    assert hit.box.x_min >= 0.0
-    assert hit.box.y_min >= 0.0
+    assert hit.x_min >= 0.0
+    assert hit.y_min >= 0.0
 
 
 def test_a_box_spilling_past_the_far_edge_is_clamped(tmp_path):
@@ -484,8 +561,8 @@ def test_a_box_spilling_past_the_far_edge_is_clamped(tmp_path):
 
     hit = detector.detect(page()).detections[0]
 
-    assert hit.box.x_max <= 1.0
-    assert hit.box.y_max <= 1.0
+    assert hit.x_max <= PAGE_W
+    assert hit.y_max <= PAGE_H
 
 
 def test_a_box_entirely_off_the_page_is_dropped(tmp_path):
@@ -577,7 +654,7 @@ def test_reading_order_runs_down_the_page_then_across(tmp_path):
 
     ordered = detector.detect(page()).in_reading_order()
 
-    assert [round(hit.box.cx, 2) for hit in ordered] == [0.15, 0.55, 0.75]
+    assert [round(hit.centroid[0] / PAGE_W, 2) for hit in ordered] == [0.15, 0.55, 0.75]
 
 
 def test_a_page_of_detections_is_iterable(tmp_path):
@@ -644,8 +721,7 @@ def test_a_detection_reports_its_centre_in_pixels(tmp_path):
     """The row is what StaffGrid.snap turns into a staff position."""
     detector, _ = detector_with(rows=[(0.25, 0.5, 0.35, 0.6, 0.9, 0)], tmp_path=tmp_path)
 
-    found = detector.detect(page())
-    x, y = found.detections[0].center_pixels(found.image_width, found.image_height)
+    x, y = detector.detect(page()).detections[0].centroid
 
     assert x == pytest.approx(0.3 * PAGE_W)
     assert y == pytest.approx(0.55 * PAGE_H)
@@ -668,11 +744,9 @@ def test_a_notehead_centre_snaps_to_a_staff_position(tmp_path):
         tmp_path=tmp_path,
     )
 
-    found = detector.detect(page())
-    hit = found.noteheads()[0]
-    _, y = hit.center_pixels(found.image_width, found.image_height)
+    hit = detector.detect(page()).noteheads()[0]
 
-    assert grid.snap(y) == 4
+    assert grid.snap(hit.centroid[1]) == 4
 
 
 def test_a_detection_reaches_its_schema_row(tmp_path):
@@ -727,12 +801,12 @@ def test_an_empty_batch_returns_nothing(tmp_path):
 @pytest.mark.parametrize("confidence", [-0.1, 1.1])
 def test_a_detection_rejects_an_impossible_confidence(confidence):
     with pytest.raises(ValueError, match="confidence must be in"):
-        Detection(SymbolClass.ACCENT, BoundingBox(0.5, 0.5, 0.1, 0.1), confidence)
+        Detection(SymbolClass.ACCENT, confidence, 10.0, 20.0, 30.0, 40.0)
 
 
 @pytest.mark.parametrize("confidence", [0.0, 1.0])
 def test_the_confidence_bounds_are_inclusive(confidence):
-    assert Detection(SymbolClass.ACCENT, BoundingBox(0.5, 0.5, 0.1, 0.1), confidence)
+    assert Detection(SymbolClass.ACCENT, confidence, 10.0, 20.0, 30.0, 40.0)
 
 
 @pytest.mark.parametrize(("width", "height"), [(0, 600), (800, 0), (-1, 600)])
@@ -746,7 +820,7 @@ def test_an_empty_page_of_detections_is_valid():
 
 
 def test_a_detection_is_immutable():
-    hit = Detection(SymbolClass.ACCENT, BoundingBox(0.5, 0.5, 0.1, 0.1), 0.9)
+    hit = Detection(SymbolClass.ACCENT, 0.9, 10.0, 20.0, 30.0, 40.0)
 
     with pytest.raises(AttributeError):
         hit.confidence = 0.5  # type: ignore[misc]
@@ -787,15 +861,15 @@ def test_the_parser_reads_a_real_ultralytics_boxes():
     result = Result()
     result.boxes = boxes
 
-    found = _detections_from_results([result], threshold=0.25)
+    found = _detections_from_results([result], 0.25, PAGE_W, PAGE_H)
 
     assert len(found) == 1
     assert found[0].symbol is SymbolClass.CROSS_NOTEHEAD
     assert found[0].confidence == pytest.approx(0.91, abs=1e-6)
-    # x 100..140 of 800 -> centre 0.15, width 0.05
-    assert found[0].box.cx == pytest.approx(0.15, abs=1e-6)
-    assert found[0].box.w == pytest.approx(0.05, abs=1e-6)
-    assert found[0].box.cy == pytest.approx(220 / PAGE_H, abs=1e-6)
+    # Built from pixels 100..140 and 200..240; the round trip must return them.
+    assert found[0].x_min == pytest.approx(100.0, abs=1e-3)
+    assert found[0].x_max == pytest.approx(140.0, abs=1e-3)
+    assert found[0].centroid == pytest.approx((120.0, 220.0), abs=1e-3)
 
 
 @pytestmark_vision
@@ -808,3 +882,64 @@ def test_the_real_boxes_expose_the_attributes_the_stubs_imitate():
 
     for attribute in ("xyxyn", "conf", "cls"):
         assert hasattr(boxes, attribute), f"FakeBoxes imitates .{attribute}"
+
+
+# --------------------------------------------------------------------------- #
+# Against the real checkpoint
+# --------------------------------------------------------------------------- #
+
+WEIGHTS = Path(__file__).resolve().parent.parent / "models" / "stage2_synth" / "weights" / "best.pt"
+
+
+@pytest.mark.requires_model
+@pytestmark_vision
+@pytest.mark.skipif(not WEIGHTS.exists(), reason=f"no checkpoint at {WEIGHTS}")
+def test_the_real_checkpoint_agrees_with_the_schema():
+    """The guard that matters most, run against the actual weights.
+
+    A checkpoint whose class order has drifted produces confident, plausible,
+    wrong detections. Loading through SymbolDetector must refuse it.
+    """
+    detector = SymbolDetector(DetectorConfig(weights=WEIGHTS))
+
+    detector.load()  # raises ClassMismatchError if the orders disagree
+
+    assert detector.is_loaded
+
+
+@pytest.mark.requires_model
+@pytestmark_vision
+@pytest.mark.skipif(not WEIGHTS.exists(), reason=f"no checkpoint at {WEIGHTS}")
+def test_a_drifted_checkpoint_is_refused():
+    """Same weights, schema check pointed at a wrong list: must raise."""
+    from melodix.vision.labels import ClassMismatchError, class_names
+
+    names = class_names()
+    names[2], names[3] = names[3], names[2]
+
+    with pytest.raises(ClassMismatchError):
+        verify_model_classes(names)
+
+
+@pytest.mark.requires_model
+@pytestmark_vision
+@pytest.mark.skipif(not WEIGHTS.exists(), reason=f"no checkpoint at {WEIGHTS}")
+def test_the_real_checkpoint_detects_on_a_synthetic_page():
+    """End to end on one page: real weights, real inference, typed output.
+
+    Slow on CPU, and it asserts only that the plumbing works — that detections
+    come back as Detections with pixel boxes inside the page. Accuracy is the
+    validation script's job, not a unit test's.
+    """
+    import numpy as np
+
+    blank = np.full((1400, 1000), 255, dtype=np.uint8)
+    detector = SymbolDetector(DetectorConfig(weights=WEIGHTS, device="cpu"))
+
+    found = detector.detect(blank)
+
+    assert found.image_width == 1000
+    assert found.image_height == 1400
+    for hit in found:
+        assert 0.0 <= hit.x_min <= hit.x_max <= 1000
+        assert 0.0 <= hit.y_min <= hit.y_max <= 1400

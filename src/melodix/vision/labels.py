@@ -31,6 +31,7 @@ stays importable — and testable — without the ``vision`` extra installed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import Final
@@ -38,6 +39,8 @@ from typing import Final
 __all__ = [
     "LABELS",
     "NUM_CLASSES",
+    "ClassMismatchError",
+    "NoteheadShape",
     "SymbolCategory",
     "SymbolClass",
     "SymbolLabel",
@@ -45,7 +48,19 @@ __all__ = [
     "label_for_id",
     "label_for_name",
     "labels_in_category",
+    "labels_with_shape",
+    "verify_model_classes",
 ]
+
+
+class ClassMismatchError(ValueError):
+    """Raised when a checkpoint's class list disagrees with this schema.
+
+    The failure this guards is silent: YOLO stores class *indices*, so a
+    checkpoint trained against a different ordering keeps running and simply
+    reports the wrong symbol for every detection. Nothing downstream can notice
+    — a cross notehead reported as a diamond is still a plausible detection.
+    """
 
 
 class SymbolCategory(StrEnum):
@@ -67,6 +82,45 @@ class SymbolCategory(StrEnum):
     DURATION = "duration"
     MODIFIER = "modifier"
     STRUCTURE = "structure"
+
+
+class NoteheadShape(StrEnum):
+    """The head shape Stage 3 pairs with a staff position to pick a drum.
+
+    Shape and position together name a voice: an ``X`` head on position 8 is a
+    closed hi-hat, a ``ROUND`` head on position 5 is an acoustic snare. Neither
+    alone is enough, which is why the detector reports shape and Stage 1
+    reports position.
+
+    Two mappings here are decisions rather than transcriptions, and both matter
+    downstream:
+
+    ``HOLLOW_NOTEHEAD`` carries shape ``ROUND``. A hollow head differs from a
+    filled one in *duration*, not in which drum is struck — a half-note snare
+    is still a snare. Giving it its own shape would split one voice in two.
+
+    ``CIRCLE_CROSS_NOTEHEAD`` carries shape ``CIRCLE_X``, not ``X``. A circled
+    cross on the top line is a ride bell where a bare cross is a closed hi-hat,
+    so collapsing the two would make those voices indistinguishable at exactly
+    the position where they collide.
+
+    Attributes:
+        ROUND: Oval head, filled or hollow.
+        X: Cross head.
+        CIRCLE_X: Cross head inside a circle.
+        TRIANGLE: Triangular head.
+        DIAMOND: Diamond head.
+        SLASH: Rhythm slash.
+        NONE: Not a notehead. Rests, modifiers and page furniture.
+    """
+
+    ROUND = "round"
+    X = "x"
+    CIRCLE_X = "circle_x"
+    TRIANGLE = "triangle"
+    DIAMOND = "diamond"
+    SLASH = "slash"
+    NONE = "none"
 
 
 class SymbolClass(IntEnum):
@@ -126,11 +180,15 @@ class SymbolLabel:
     Attributes:
         symbol: The class itself, which also carries its id.
         category: Downstream handling for this shape.
+        shape: Head shape, which Stage 3 pairs with a staff position to pick a
+            percussion voice. :attr:`NoteheadShape.NONE` for anything that is
+            not a notehead.
         description: What an annotator should draw a box around.
     """
 
     symbol: SymbolClass
     category: SymbolCategory
+    shape: NoteheadShape
     description: str
 
     @property
@@ -163,9 +221,21 @@ class SymbolLabel:
         return self.category is SymbolCategory.MODIFIER
 
 
-def _label(symbol: SymbolClass, category: SymbolCategory, description: str) -> SymbolLabel:
-    """Build one schema row."""
-    return SymbolLabel(symbol=symbol, category=category, description=description)
+def _label(
+    symbol: SymbolClass,
+    category: SymbolCategory,
+    description: str,
+    shape: NoteheadShape = NoteheadShape.NONE,
+) -> SymbolLabel:
+    """Build one schema row.
+
+    ``shape`` defaults to :attr:`NoteheadShape.NONE`, so only the notehead rows
+    below name one. A rest or an accent has no head shape, and defaulting keeps
+    that from being restated twenty-one times.
+    """
+    return SymbolLabel(
+        symbol=symbol, category=category, shape=shape, description=description
+    )
 
 
 _NOTEHEAD = SymbolCategory.NOTEHEAD
@@ -176,13 +246,34 @@ _STRUCTURE = SymbolCategory.STRUCTURE
 
 #: The schema, ordered by class id. Index equals :attr:`SymbolLabel.class_id`.
 LABELS: Final[tuple[SymbolLabel, ...]] = (
-    _label(SymbolClass.ROUND_NOTEHEAD, _NOTEHEAD, "Filled oval head: snare, toms, kick"),
-    _label(SymbolClass.HOLLOW_NOTEHEAD, _NOTEHEAD, "Unfilled oval head, half or whole duration"),
-    _label(SymbolClass.CROSS_NOTEHEAD, _NOTEHEAD, "X head: hi-hat, ride, crash"),
-    _label(SymbolClass.CIRCLE_CROSS_NOTEHEAD, _NOTEHEAD, "X head inside a circle: ride bell"),
-    _label(SymbolClass.DIAMOND_NOTEHEAD, _NOTEHEAD, "Diamond head: cymbal bell, harmonic"),
-    _label(SymbolClass.TRIANGLE_NOTEHEAD, _NOTEHEAD, "Triangular head, kit-specific voice"),
-    _label(SymbolClass.SLASH_NOTEHEAD, _NOTEHEAD, "Rhythm slash: play the written groove"),
+    _label(
+        SymbolClass.ROUND_NOTEHEAD, _NOTEHEAD, "Filled oval head: snare, toms, kick",
+        NoteheadShape.ROUND,
+    ),
+    _label(
+        SymbolClass.HOLLOW_NOTEHEAD, _NOTEHEAD, "Unfilled oval head, half or whole duration",
+        NoteheadShape.ROUND,  # same voice as filled; the difference is duration
+    ),
+    _label(
+        SymbolClass.CROSS_NOTEHEAD, _NOTEHEAD, "X head: hi-hat, ride, crash",
+        NoteheadShape.X,
+    ),
+    _label(
+        SymbolClass.CIRCLE_CROSS_NOTEHEAD, _NOTEHEAD, "X head inside a circle: ride bell",
+        NoteheadShape.CIRCLE_X,  # distinct from X: collides with hi-hat at position 8
+    ),
+    _label(
+        SymbolClass.DIAMOND_NOTEHEAD, _NOTEHEAD, "Diamond head: cymbal bell, harmonic",
+        NoteheadShape.DIAMOND,
+    ),
+    _label(
+        SymbolClass.TRIANGLE_NOTEHEAD, _NOTEHEAD, "Triangular head, kit-specific voice",
+        NoteheadShape.TRIANGLE,
+    ),
+    _label(
+        SymbolClass.SLASH_NOTEHEAD, _NOTEHEAD, "Rhythm slash: play the written groove",
+        NoteheadShape.SLASH,
+    ),
     _label(SymbolClass.REST_WHOLE, _REST, "Whole rest: filled bar hanging below a line"),
     _label(SymbolClass.REST_HALF, _REST, "Half rest: filled bar sitting on a line"),
     _label(SymbolClass.REST_QUARTER, _REST, "Quarter rest"),
@@ -256,6 +347,72 @@ def class_names() -> list[str]:
     assignment. Never sort it.
     """
     return [label.name for label in LABELS]
+
+
+def labels_with_shape(shape: NoteheadShape) -> tuple[SymbolLabel, ...]:
+    """Return every class carrying one head shape, ordered by id.
+
+    Args:
+        shape: The shape to filter by.
+
+    Returns:
+        Matching schema rows, possibly empty.
+    """
+    return tuple(label for label in LABELS if label.shape is shape)
+
+
+def verify_model_classes(names: Mapping[int, str] | Sequence[str]) -> None:
+    """Check a checkpoint's class list against this schema, or raise.
+
+    Call this immediately after loading a checkpoint, before any detection is
+    trusted. YOLO stores class *indices*, so a checkpoint trained against a
+    different ordering does not fail — it silently reports the wrong symbol for
+    every detection, and Stage 3 turns that into the wrong drum.
+
+    Takes the name mapping rather than the model itself, so this module stays
+    free of torch::
+
+        verify_model_classes(model.names)
+
+    Args:
+        names: Either ultralytics' ``{index: name}`` mapping or a plain
+            sequence of names in index order.
+
+    Raises:
+        ClassMismatchError: If the count differs or any index carries a
+            different name. The message lists every disagreement, since a
+            checkpoint that has drifted usually differs in more than one place.
+    """
+    if isinstance(names, Mapping):
+        try:
+            declared = [names[index] for index in sorted(names)]
+        except (KeyError, TypeError) as error:
+            raise ClassMismatchError(f"class-name mapping is not indexed by int: {error}") from None
+    else:
+        declared = list(names)
+
+    expected = class_names()
+    if declared == expected:
+        return
+
+    problems: list[str] = []
+    if len(declared) != len(expected):
+        problems.append(f"checkpoint has {len(declared)} classes, schema has {len(expected)}")
+    for index in range(max(len(declared), len(expected))):
+        left = declared[index] if index < len(declared) else "<missing>"
+        right = expected[index] if index < len(expected) else "<missing>"
+        if left != right:
+            problems.append(f"index {index}: checkpoint {left!r} != schema {right!r}")
+
+    listed = "\n  ".join(problems)
+    raise ClassMismatchError(
+        "checkpoint class list does not match melodix.vision.labels:\n  "
+        f"{listed}\n"
+        "Every detection would be mapped to the wrong symbol, and nothing "
+        "downstream can detect this. Retrain against a data.yaml generated by "
+        "melodix.vision.dataset.write_data_yaml, or pin the schema to the "
+        "checkpoint."
+    )
 
 
 def labels_in_category(category: SymbolCategory) -> tuple[SymbolLabel, ...]:

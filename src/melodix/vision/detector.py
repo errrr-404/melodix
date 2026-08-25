@@ -10,15 +10,17 @@ message naming the install command.
 
 What comes back
 ---------------
-Detections carry a **shape class and a normalised box**, never a drum voice.
-Resolving a voice needs the staff grid, and follows the same handoff the rest
-of the pipeline uses::
+Detections carry a **shape class and an absolute pixel box**, never a drum
+voice. Resolving a voice needs the staff grid, and follows the same handoff the
+rest of the pipeline uses::
 
     detections = detector.detect(page)
     for hit in detections.noteheads():
-        x, y = hit.center_pixels(detections.image_width, detections.image_height)
-        position = grid.snap(y)          # None when ambiguous
-        # Stage 3 pairs (hit.symbol, position) into a GM percussion note
+        position = grid.snap(hit.centroid[1])   # None when ambiguous
+        # Stage 3 pairs (hit.shape, position) into a GM percussion note
+
+Nothing here leaks ultralytics. :class:`Detection` is a plain dataclass, so
+Stage 3 can be written and tested against it with no ML framework installed.
 
 Defaults are tuned for sheet music rather than photographs. Two of them differ
 sharply from the ultralytics defaults and matter enough to state plainly:
@@ -39,7 +41,14 @@ import numpy as np
 import numpy.typing as npt
 
 from melodix.vision.dataset import BoundingBox
-from melodix.vision.labels import NUM_CLASSES, SymbolCategory, SymbolClass, SymbolLabel
+from melodix.vision.labels import (
+    NUM_CLASSES,
+    NoteheadShape,
+    SymbolCategory,
+    SymbolClass,
+    SymbolLabel,
+    verify_model_classes,
+)
 
 __all__ = [
     "Detection",
@@ -86,6 +95,10 @@ class DetectorConfig:
         device: ``"cpu"``, ``"cuda"``, ``"cuda:1"``, or ``"auto"`` to let
             ultralytics choose.
         half: Use float16 inference. Ignored on CPU.
+        verify_classes: Check the checkpoint's class list against
+            :mod:`melodix.vision.labels` when the model loads. Leave this
+            on: a drifted checkpoint reports the wrong symbol for every
+            detection and nothing downstream can tell.
     """
 
     weights: Path
@@ -95,6 +108,7 @@ class DetectorConfig:
     max_detections: int = 3000
     device: str = "auto"
     half: bool = False
+    verify_classes: bool = True
 
     def __post_init__(self) -> None:
         """Validate the configuration.
@@ -122,24 +136,55 @@ class DetectorConfig:
 class Detection:
     """One symbol the detector found.
 
+    Coordinates are **absolute pixels** on the page the detection came from,
+    not normalised fractions. Annotations on disk are normalised, because a
+    label file has to survive being read at any resolution; a detection is
+    always about one specific page, and the things that consume it — Stage 1's
+    :meth:`~melodix.geometry.staff.StaffGrid.snap` and the eventual
+    ``sync_map.json`` — both work in pixels. Storing fractions here would mean
+    every consumer carried the page size alongside, and a caller passing the
+    wrong size would silently produce plausible, wrong positions.
+
     Attributes:
         symbol: The shape class. Never a drum voice — see the module docstring.
-        box: Where it sits, normalised to the page.
         confidence: Model score in ``[0, 1]``.
+        x_min: Left edge in pixels.
+        y_min: Top edge in pixels.
+        x_max: Right edge in pixels.
+        y_max: Bottom edge in pixels.
     """
 
     symbol: SymbolClass
-    box: BoundingBox
     confidence: float
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
 
     def __post_init__(self) -> None:
         """Validate the detection.
 
         Raises:
-            ValueError: If the confidence is outside ``[0, 1]``.
+            ValueError: If the confidence is outside ``[0, 1]`` or the corners
+                are inverted.
         """
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError(f"confidence must be in [0, 1], got {self.confidence}")
+        if self.x_max < self.x_min or self.y_max < self.y_min:
+            raise ValueError(
+                f"corners must be ordered top-left to bottom-right, got "
+                f"({self.x_min}, {self.y_min})..({self.x_max}, {self.y_max})"
+            )
+
+    @property
+    def class_id(self) -> int:
+        """The integer the checkpoint emitted."""
+        return int(self.symbol)
+
+    @property
+    def class_name(self) -> str:
+        """The canonical snake_case name for this class."""
+        return self.label.name
 
     @property
     def label(self) -> SymbolLabel:
@@ -152,25 +197,51 @@ class Detection:
         return self.label.category
 
     @property
+    def shape(self) -> NoteheadShape:
+        """Head shape, which Stage 3 pairs with a staff position."""
+        return self.label.shape
+
+    @property
     def carries_position(self) -> bool:
         """Whether a staff position must be resolved for this detection."""
         return self.label.carries_position
 
-    def center_pixels(self, image_width: int, image_height: int) -> tuple[float, float]:
-        """Return the centre in pixels, as ``(x, y)``.
+    @property
+    def centroid(self) -> tuple[float, float]:
+        """Box centre in pixels, as ``(x, y)``.
 
-        The row is what
-        :meth:`~melodix.geometry.staff.StaffGrid.snap` converts to a staff
-        position.
+        The handoff to Stage 1: hand the row to
+        :meth:`~melodix.geometry.staff.StaffGrid.snap` for a staff position.
+        """
+        return ((self.x_min + self.x_max) / 2.0, (self.y_min + self.y_max) / 2.0)
+
+    @property
+    def width(self) -> float:
+        """Box width in pixels."""
+        return self.x_max - self.x_min
+
+    @property
+    def height(self) -> float:
+        """Box height in pixels."""
+        return self.y_max - self.y_min
+
+    def normalized(self, image_width: int, image_height: int) -> BoundingBox:
+        """Return this box in the normalised form label files use.
+
+        The inverse of how detections are built. Needed when predictions are
+        written back out as training labels, which is how a fine-tuning corpus
+        gets bootstrapped from a first model.
 
         Args:
             image_width: Page width in pixels.
             image_height: Page height in pixels.
 
         Returns:
-            Centre column and row in pixels.
+            The equivalent normalised box.
         """
-        return self.box.center_pixels(image_width, image_height)
+        return BoundingBox.from_pixels(
+            self.x_min, self.y_min, self.x_max, self.y_max, image_width, image_height
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,7 +314,7 @@ class PageDetections:
         a page instead, so it wants this.
         """
         return tuple(
-            sorted(self.detections, key=lambda hit: (hit.box.cy, hit.box.cx))
+            sorted(self.detections, key=lambda hit: (hit.centroid[1], hit.centroid[0]))
         )
 
 
@@ -318,11 +389,22 @@ class SymbolDetector:
         self._ensure_model()
 
     def _ensure_model(self) -> Any:
-        """Return the loaded model, loading it on first call."""
+        """Return the loaded model, loading and checking it on first call.
+
+        The class-order check runs here, once, rather than per detection. A
+        checkpoint whose class list has drifted from the schema produces
+        confident, plausible, wrong detections forever after, so it must not be
+        allowed to return a single one.
+        """
         if self._model is None:
             if not self._config.weights.exists():
                 raise FileNotFoundError(f"no checkpoint at {self._config.weights}")
-            self._model = self._factory(self._config.weights, self._config)
+            model = self._factory(self._config.weights, self._config)
+            if self._config.verify_classes:
+                names = getattr(model, "names", None)
+                if names is not None:
+                    verify_model_classes(names)
+            self._model = model
         return self._model
 
     def detect(
@@ -365,7 +447,7 @@ class SymbolDetector:
             **({} if self._config.device == "auto" else {"device": self._config.device}),
         )
 
-        detections = _detections_from_results(results, threshold)
+        detections = _detections_from_results(results, threshold, width, height)
         return PageDetections(
             detections=tuple(
                 sorted(detections, key=lambda hit: hit.confidence, reverse=True)
@@ -430,13 +512,17 @@ def _prepare_image(image: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
     raise ValueError(f"unsupported image shape {image.shape}; expected 2-D or H*W*{{1,3,4}}")
 
 
-def _detections_from_results(results: Iterable[Any], threshold: float) -> list[Detection]:
+def _detections_from_results(
+    results: Iterable[Any], threshold: float, image_width: int, image_height: int
+) -> list[Detection]:
     """Convert ultralytics results into typed detections.
 
     Args:
         results: What ``model.predict`` returned.
         threshold: Confidence floor, applied again here because a caller can
             pass a model that ignores the ``conf`` argument.
+        image_width: Page width, to turn normalised corners into pixels.
+        image_height: Page height, to turn normalised corners into pixels.
 
     Returns:
         Detections, unordered.
@@ -453,8 +539,8 @@ def _detections_from_results(results: Iterable[Any], threshold: float) -> list[D
         for x1, y1, x2, y2, confidence, class_id in _rows(boxes):
             if confidence < threshold:
                 continue
-            box = _box_from_xyxyn(x1, y1, x2, y2)
-            if box is None:
+            corners = _pixel_corners(x1, y1, x2, y2, image_width, image_height)
+            if corners is None:
                 continue
             if not 0 <= class_id < NUM_CLASSES:
                 raise ValueError(
@@ -462,11 +548,15 @@ def _detections_from_results(results: Iterable[Any], threshold: float) -> list[D
                     f"(0..{NUM_CLASSES - 1}). The checkpoint was trained against a "
                     f"different label set than melodix.vision.labels defines."
                 )
+            left, top, right, bottom = corners
             detections.append(
                 Detection(
                     symbol=SymbolClass(class_id),
-                    box=box,
                     confidence=min(1.0, max(0.0, confidence)),
+                    x_min=left,
+                    y_min=top,
+                    x_max=right,
+                    y_max=bottom,
                 )
             )
     return detections
@@ -506,23 +596,32 @@ def _rows(boxes: Any) -> Iterator[tuple[float, float, float, float, float, int]]
         yield x1, y1, x2, y2, float(confidence), int(class_id)
 
 
-def _box_from_xyxyn(x1: float, y1: float, x2: float, y2: float) -> BoundingBox | None:
-    """Convert normalised corners to a box, clamping to the page.
+def _pixel_corners(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    image_width: int,
+    image_height: int,
+) -> tuple[float, float, float, float] | None:
+    """Convert normalised corners to absolute pixels, clamped to the page.
 
     YOLO routinely emits corners a hair outside ``[0, 1]`` for a symbol at the
-    page edge, and :class:`~melodix.vision.dataset.BoundingBox` validates
-    strictly. Clamping here keeps a legitimate edge detection rather than
-    letting valid inference raise.
+    page edge. Clamping keeps a legitimate edge detection rather than letting
+    valid inference produce a box that runs off the image.
 
     Args:
         x1: Left edge, normalised.
         y1: Top edge, normalised.
         x2: Right edge, normalised.
         y2: Bottom edge, normalised.
+        image_width: Page width in pixels.
+        image_height: Page height in pixels.
 
     Returns:
-        The box, or ``None`` when clamping collapsed it to no area — which
-        happens for a detection entirely outside the page.
+        ``(x_min, y_min, x_max, y_max)`` in pixels, or ``None`` when clamping
+        collapsed the box to no area — which happens for a detection entirely
+        outside the page.
     """
     left, right = sorted((x1, x2))
     top, bottom = sorted((y1, y2))
@@ -532,14 +631,12 @@ def _box_from_xyxyn(x1: float, y1: float, x2: float, y2: float) -> BoundingBox |
     top = min(1.0, max(0.0, top))
     bottom = min(1.0, max(0.0, bottom))
 
-    width = right - left
-    height = bottom - top
-    if width < _MIN_BOX_EXTENT or height < _MIN_BOX_EXTENT:
+    if right - left < _MIN_BOX_EXTENT or bottom - top < _MIN_BOX_EXTENT:
         return None
 
-    return BoundingBox(
-        cx=(left + right) / 2.0,
-        cy=(top + bottom) / 2.0,
-        w=width,
-        h=height,
+    return (
+        left * image_width,
+        top * image_height,
+        right * image_width,
+        bottom * image_height,
     )

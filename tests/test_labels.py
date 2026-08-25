@@ -14,6 +14,8 @@ import pytest
 from melodix.vision.labels import (
     LABELS,
     NUM_CLASSES,
+    ClassMismatchError,
+    NoteheadShape,
     SymbolCategory,
     SymbolClass,
     SymbolLabel,
@@ -21,6 +23,8 @@ from melodix.vision.labels import (
     label_for_id,
     label_for_name,
     labels_in_category,
+    labels_with_shape,
+    verify_model_classes,
 )
 
 # The published class ids. Append to this list when adding a class; never
@@ -328,7 +332,173 @@ def test_a_label_is_hashable():
     assert len({LABELS[0], LABELS[0], LABELS[1]}) == 2
 
 
-def test_the_category_is_a_string_enum():
-    """So it serialises into a sync map without conversion."""
+def test_the_category_and_shape_are_string_enums():
+    """So both serialise into a sync map without conversion."""
     assert SymbolCategory.NOTEHEAD == "notehead"
-    assert isinstance(SymbolLabel(SymbolClass.ACCENT, SymbolCategory.MODIFIER, "x").category, str)
+    assert NoteheadShape.CIRCLE_X == "circle_x"
+
+    row = SymbolLabel(SymbolClass.ACCENT, SymbolCategory.MODIFIER, NoteheadShape.NONE, "x")
+
+    assert isinstance(row.category, str)
+    assert isinstance(row.shape, str)
+
+
+# --------------------------------------------------------------------------- #
+# Notehead shape
+# --------------------------------------------------------------------------- #
+
+
+def test_every_notehead_carries_a_real_shape():
+    """Shape plus staff position is what names a drum, so a notehead with no
+    shape would be unmappable in Stage 3.
+    """
+    for label in labels_in_category(SymbolCategory.NOTEHEAD):
+        assert label.shape is not NoteheadShape.NONE, label.name
+
+
+def test_nothing_but_a_notehead_carries_a_shape():
+    shaped = {label.name for label in LABELS if label.shape is not NoteheadShape.NONE}
+    noteheads = {label.name for label in labels_in_category(SymbolCategory.NOTEHEAD)}
+
+    assert shaped == noteheads
+
+
+def test_a_rest_has_no_shape():
+    assert label_for_name("rest_quarter").shape is NoteheadShape.NONE
+
+
+def test_an_accent_has_no_shape():
+    assert label_for_name("accent").shape is NoteheadShape.NONE
+
+
+def test_hollow_and_filled_heads_share_a_shape():
+    """They differ in duration, not in which drum is struck. Splitting them
+    would divide one voice into two.
+    """
+    assert label_for_name("hollow_notehead").shape is label_for_name("round_notehead").shape
+
+
+def test_a_circled_cross_is_not_the_same_shape_as_a_bare_cross():
+    """Both sit on the top line — a ride bell and a closed hi-hat. Collapsing
+    the shapes would make those two voices indistinguishable.
+    """
+    assert label_for_name("circle_cross_notehead").shape is not label_for_name(
+        "cross_notehead"
+    ).shape
+
+
+@pytest.mark.parametrize(
+    ("name", "shape"),
+    [
+        ("round_notehead", NoteheadShape.ROUND),
+        ("cross_notehead", NoteheadShape.X),
+        ("circle_cross_notehead", NoteheadShape.CIRCLE_X),
+        ("diamond_notehead", NoteheadShape.DIAMOND),
+        ("triangle_notehead", NoteheadShape.TRIANGLE),
+        ("slash_notehead", NoteheadShape.SLASH),
+    ],
+)
+def test_each_head_maps_to_its_shape(name, shape):
+    assert label_for_name(name).shape is shape
+
+
+def test_shapes_can_be_looked_up():
+    assert [label.name for label in labels_with_shape(NoteheadShape.ROUND)] == [
+        "round_notehead",
+        "hollow_notehead",
+    ]
+
+
+def test_an_unused_shape_returns_empty():
+    assert labels_with_shape(NoteheadShape.NONE)
+
+
+def test_distinct_voices_are_distinguishable_by_shape_and_position():
+    """The Stage 3 contract: (shape, position) must name at most one voice.
+    Two different head shapes on one position is fine; two classes sharing a
+    shape must be the same voice.
+    """
+    by_shape: dict[NoteheadShape, set[str]] = {}
+    for label in labels_in_category(SymbolCategory.NOTEHEAD):
+        by_shape.setdefault(label.shape, set()).add(label.name)
+
+    collisions = {shape: names for shape, names in by_shape.items() if len(names) > 1}
+
+    # Only round is shared, and deliberately: filled and hollow are one voice.
+    assert set(collisions) == {NoteheadShape.ROUND}
+
+
+# --------------------------------------------------------------------------- #
+# Guarding against a drifted checkpoint
+# --------------------------------------------------------------------------- #
+
+
+def test_a_matching_name_list_is_accepted():
+    verify_model_classes(class_names())
+
+
+def test_a_matching_index_mapping_is_accepted():
+    """Ultralytics hands over {index: name}, not a list."""
+    verify_model_classes(dict(enumerate(class_names())))
+
+
+def test_a_mapping_in_scrambled_key_order_is_accepted():
+    """Dict order is not index order; the check must sort by key."""
+    scrambled = dict(reversed(list(enumerate(class_names()))))
+
+    verify_model_classes(scrambled)
+
+
+def test_a_renamed_class_is_rejected():
+    names = class_names()
+    names[2] = "cowbell"
+
+    with pytest.raises(ClassMismatchError, match="index 2"):
+        verify_model_classes(names)
+
+
+def test_a_reordered_class_list_is_rejected():
+    """The silent failure this exists for: swapping two entries raises nothing
+    at inference and reports the wrong drum forever.
+    """
+    names = class_names()
+    names[2], names[3] = names[3], names[2]
+
+    with pytest.raises(ClassMismatchError):
+        verify_model_classes(names)
+
+
+def test_a_short_class_list_is_rejected():
+    with pytest.raises(ClassMismatchError, match="has 5 classes"):
+        verify_model_classes(class_names()[:5])
+
+
+def test_a_long_class_list_is_rejected():
+    with pytest.raises(ClassMismatchError, match="classes"):
+        verify_model_classes([*class_names(), "cowbell"])
+
+
+def test_the_error_names_every_disagreement():
+    """A drifted checkpoint usually differs in more than one place, and fixing
+    them one round trip at a time is miserable.
+    """
+    names = class_names()
+    names[0] = "a"
+    names[5] = "b"
+
+    with pytest.raises(ClassMismatchError) as caught:
+        verify_model_classes(names)
+
+    message = str(caught.value)
+    assert "index 0" in message
+    assert "index 5" in message
+
+
+def test_the_error_says_what_to_do_about_it():
+    with pytest.raises(ClassMismatchError, match="write_data_yaml"):
+        verify_model_classes(["wrong"])
+
+
+def test_a_mismatch_is_a_value_error():
+    """So a caller can catch it without importing the specific type."""
+    assert issubclass(ClassMismatchError, ValueError)

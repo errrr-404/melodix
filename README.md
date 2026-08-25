@@ -10,7 +10,7 @@ karaoke-style sheet highlighting.
 | Stage | Package | Technique | Output |
 |---|---|---|---|
 | 1. Spatial geometry | `melodix.geometry` | OpenCV | Staff grids, barlines, systems |
-| 2. Symbol recognition | `melodix.vision` | YOLO / PyTorch | Classified bounding boxes |
+| 2. Symbol recognition | `melodix.vision` | YOLOv8 / PyTorch | Classified bounding boxes |
 | 3. Reconstruction | `melodix.mapping`, `melodix.midi` | mido | Multi-track MIDI + sync map |
 | 4. Synthesis | `melodix.audio` | FluidSynth / FFmpeg | WAV → MP3 |
 
@@ -90,6 +90,7 @@ pytest --cov=melodix --cov-report=term-missing
 - [x] **Phase 1.2** `geometry/deskew.py` — skew estimation before detection
 - [x] **Phase 1.3** `geometry/barlines.py` — measure segmentation
 - [x] **Phase 1.4** `geometry/systems.py` — ensemble system grouping
-- [ ] **Phase 2** Symbol recognition — `vision/labels.py`, `vision/dataset.py`, `vision/detector.py`
+- [x] **Phase 2** Symbol recognition — `vision/labels.py`, `vision/dataset.py`, `vision/detector.py`
+  - Pretraining checkpoint only: synthetic data, 2 epochs. Needs real scans before shipping.
 - [ ] **Phase 3** Reconstruction and MIDI
 - [ ] **Phase 4** Synthesis and encoding

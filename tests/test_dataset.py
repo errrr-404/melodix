@@ -19,13 +19,20 @@ from melodix.vision.dataset import (
     BoundingBox,
     LabeledImage,
     class_distribution,
+    find_unlabelled_images,
     label_path_for_image,
+    parse_data_yaml,
     parse_label_file,
     split_dataset,
     write_data_yaml,
     write_label_file,
 )
-from melodix.vision.labels import NUM_CLASSES, SymbolClass, class_names
+from melodix.vision.labels import (
+    NUM_CLASSES,
+    ClassMismatchError,
+    SymbolClass,
+    class_names,
+)
 
 # Coordinates are written to six decimals, so a file round trip is lossy at
 # roughly that scale.
@@ -673,3 +680,194 @@ def test_data_yaml_creates_missing_directories(tmp_path):
     write_data_yaml(path, tmp_path)
 
     assert path.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Reading a data.yaml
+# --------------------------------------------------------------------------- #
+
+
+def test_a_written_descriptor_reads_back(tmp_path):
+    """The round trip that matters: what write_data_yaml emits, parse_data_yaml
+    must accept.
+    """
+    path = tmp_path / "data.yaml"
+    write_data_yaml(path, tmp_path)
+
+    config = parse_data_yaml(path)
+
+    assert config.root == tmp_path.resolve()
+    assert config.train_dir == "images/train"
+    assert config.val_dir == "images/val"
+    assert list(config.names) == class_names()
+
+
+def test_split_paths_resolve_against_the_root(tmp_path):
+    path = tmp_path / "data.yaml"
+    write_data_yaml(path, tmp_path)
+
+    config = parse_data_yaml(path)
+
+    assert config.train_images == tmp_path.resolve() / "images" / "train"
+    assert config.val_images == tmp_path.resolve() / "images" / "val"
+
+
+def test_custom_split_directories_are_read(tmp_path):
+    path = tmp_path / "data.yaml"
+    write_data_yaml(path, tmp_path, train_dir="images/fit", val_dir="images/holdout")
+
+    config = parse_data_yaml(path)
+
+    assert config.train_dir == "images/fit"
+    assert config.val_dir == "images/holdout"
+
+
+def test_a_missing_descriptor_is_reported(tmp_path):
+    with pytest.raises(FileNotFoundError, match="no dataset descriptor"):
+        parse_data_yaml(tmp_path / "absent.yaml")
+
+
+@pytest.mark.parametrize("key", ["path", "train", "val"])
+def test_a_missing_required_key_is_reported(tmp_path, key):
+    path = tmp_path / "data.yaml"
+    write_data_yaml(path, tmp_path)
+    kept = [
+        line for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(f"{key}:")
+    ]
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=key):
+        parse_data_yaml(path)
+
+
+def test_a_descriptor_with_no_classes_is_reported(tmp_path):
+    path = tmp_path / "data.yaml"
+    path.write_text("path: /x\ntrain: a\nval: b\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="declares no class names"):
+        parse_data_yaml(path)
+
+
+def test_a_drifted_class_list_is_rejected(tmp_path):
+    """The guard against training a checkpoint against a stale schema."""
+    path = tmp_path / "data.yaml"
+    write_data_yaml(path, tmp_path)
+    body = path.read_text(encoding="utf-8").replace("0: round_notehead", "0: cowbell")
+    path.write_text(body, encoding="utf-8")
+
+    with pytest.raises(ClassMismatchError):
+        parse_data_yaml(path)
+
+
+def test_a_foreign_dataset_can_be_inspected_without_the_check(tmp_path):
+    path = tmp_path / "data.yaml"
+    path.write_text("path: /x\ntrain: a\nval: b\nnames:\n  0: cat\n  1: dog\n", encoding="utf-8")
+
+    config = parse_data_yaml(path, verify_classes=False)
+
+    assert config.names == ("cat", "dog")
+
+
+def test_a_class_count_disagreeing_with_the_names_is_reported(tmp_path):
+    path = tmp_path / "data.yaml"
+    path.write_text(
+        "path: /x\ntrain: a\nval: b\nnc: 5\nnames:\n  0: cat\n  1: dog\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="nc=5 but lists 2"):
+        parse_data_yaml(path, verify_classes=False)
+
+
+def test_non_contiguous_class_indices_are_reported(tmp_path):
+    path = tmp_path / "data.yaml"
+    path.write_text(
+        "path: /x\ntrain: a\nval: b\nnames:\n  0: cat\n  2: dog\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="not contiguous"):
+        parse_data_yaml(path, verify_classes=False)
+
+
+def test_a_non_integer_class_key_is_reported(tmp_path):
+    path = tmp_path / "data.yaml"
+    path.write_text(
+        "path: /x\ntrain: a\nval: b\nnames:\n  cat: 0\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="must be integers"):
+        parse_data_yaml(path, verify_classes=False)
+
+
+def test_comments_are_ignored(tmp_path):
+    """write_data_yaml leads with two comment lines."""
+    path = tmp_path / "data.yaml"
+    write_data_yaml(path, tmp_path)
+
+    assert parse_data_yaml(path).train_dir == "images/train"
+
+
+# --------------------------------------------------------------------------- #
+# Unpaired images
+# --------------------------------------------------------------------------- #
+
+
+def build_split(root: Path, images: int, labelled: int) -> Path:
+    """Write `images` pages of which the first `labelled` have label files."""
+    images_dir = root / "images" / "train"
+    labels_dir = root / "labels" / "train"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(images):
+        (images_dir / f"page_{index}.png").write_bytes(b"")
+        if index < labelled:
+            (labels_dir / f"page_{index}.txt").write_text("", encoding="utf-8")
+    return images_dir
+
+
+def test_a_fully_labelled_split_reports_nothing(tmp_path):
+    images_dir = build_split(tmp_path, images=4, labelled=4)
+
+    assert find_unlabelled_images(images_dir) == ()
+
+
+def test_an_unpaired_image_is_reported(tmp_path):
+    """Ultralytics reads a missing label file as a deliberate negative example
+    and trains on it, so this only ever surfaces as a disappointing mAP.
+    """
+    images_dir = build_split(tmp_path, images=4, labelled=2)
+
+    unpaired = find_unlabelled_images(images_dir)
+
+    assert len(unpaired) == 2
+    assert {path.stem for path in unpaired} == {"page_2", "page_3"}
+
+
+def test_an_empty_label_file_counts_as_labelled(tmp_path):
+    """An empty file is a deliberate negative example; a missing one is a bug."""
+    images_dir = build_split(tmp_path, images=2, labelled=2)
+
+    assert find_unlabelled_images(images_dir) == ()
+
+
+def test_the_labels_directory_can_be_given(tmp_path):
+    images_dir = build_split(tmp_path, images=2, labelled=0)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "page_0.txt").write_text("", encoding="utf-8")
+
+    unpaired = find_unlabelled_images(images_dir, labels_dir=elsewhere)
+
+    assert [path.stem for path in unpaired] == ["page_1"]
+
+
+def test_a_missing_image_directory_is_reported(tmp_path):
+    with pytest.raises(FileNotFoundError, match="no image directory"):
+        find_unlabelled_images(tmp_path / "absent")
+
+
+def test_non_image_files_are_ignored(tmp_path):
+    images_dir = build_split(tmp_path, images=2, labelled=2)
+    (images_dir / "notes.md").write_text("scratch", encoding="utf-8")
+
+    assert find_unlabelled_images(images_dir) == ()
