@@ -47,6 +47,21 @@ pip install -e ".[dev,audio]"    # adds pyfluidsynth + pydub
 
 Stage 4 also needs system binaries: `libfluidsynth` and `ffmpeg`.
 
+### Training
+
+**Ad-hoc `model.train()` calls are not the supported path.** They inherit
+ultralytics' COCO-tuned augmentation defaults, and the drift is invisible until
+someone reads `train_args` out of the checkpoint — which is exactly how the
+first checkpoint came to be trained with half its pages mirrored. Use
+`scripts/train_yolo.py`, or `notebooks/train_colab.ipynb`, which calls it. Every
+run writes `melodix_resolved_config.json` beside its weights.
+
+```bash
+python scripts/verify_labels.py --data datasets/melodix_synth   # boxes on glyphs?
+python scripts/train_yolo.py --data datasets/melodix_synth/data.yaml --check-only
+python scripts/train_yolo.py --data datasets/melodix_synth/data.yaml
+```
+
 ### OpenCV
 
 ultralytics hard-requires `opencv-python` (the GUI build, which pulls Qt and
@@ -109,5 +124,9 @@ pytest --cov=melodix --cov-report=term-missing
   - `scripts/degrade.py` — scan-realistic degradation, boxes carried through geometry
   - `scripts/evaluate_real.py` — per-class + ensemble-slice metrics on real pages
   - `scripts/validate_yolo.py`, `scripts/fix_opencv.py`
+- [x] **Phase 2.6** Training config correction
+  - Augmentation stated explicitly in `scripts/train_yolo.py`; mirror augmentation refused
+  - `notebooks/train_colab.ipynb` calls the script; resolved config written beside the weights
+  - `scripts/verify_labels.py` — dataset label integrity; current dataset verified aligned
 - [ ] **Phase 3** Reconstruction and MIDI
 - [ ] **Phase 4** Synthesis and encoding

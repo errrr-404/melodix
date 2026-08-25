@@ -15,6 +15,7 @@ reverted.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -86,10 +87,12 @@ def test_the_detection_cap_clears_a_dense_page():
 
 
 def test_rotation_matches_what_deskew_leaves_behind():
-    """Stage 1 corrects skew first, so training past a couple of degrees
-    spends capacity on inputs the pipeline guarantees will not arrive.
+    """Stage 1 corrects skew first, so training past the residual it leaves
+    spends capacity on inputs the pipeline guarantees will not arrive. The
+    value is derived in SCORE_DEFAULTS from deskew's own constants; the two
+    tests further down check that derivation rather than the literal.
     """
-    assert runner.SCORE_DEFAULTS["degrees"] == 2.0
+    assert runner.SCORE_DEFAULTS["degrees"] == 1.0
 
 
 def test_hue_and_saturation_jitter_are_off():
@@ -288,3 +291,234 @@ def test_batch_size_can_be_set():
 def test_data_is_required():
     with pytest.raises(SystemExit):
         runner.build_parser().parse_args([])
+
+
+# --------------------------------------------------------------------------- #
+# Mirror augmentation: the regression that must never come back
+# --------------------------------------------------------------------------- #
+
+
+def test_no_mirror_augmentation_is_configured():
+    """The single most important assertion in this file.
+
+    The first checkpoint trained with fliplr=0.5, mirroring half its pages.
+    That does worse than waste samples: it teaches invariance to left-right
+    asymmetry, which is the exact cue that distinguishes a time signature from
+    a non-glyph, an accent from a shape not in the schema, and stem-up from
+    stem-down. Nothing in any metric would show it coming back.
+    """
+    for name in runner.FORBIDDEN_AUGMENTATIONS:
+        assert runner.SCORE_DEFAULTS[name] == 0.0, name
+
+
+def test_both_mirror_axes_are_forbidden():
+    assert set(runner.FORBIDDEN_AUGMENTATIONS) == {"fliplr", "flipud"}
+
+
+def test_every_forbidden_augmentation_carries_a_reason():
+    for name, reason in runner.FORBIDDEN_AUGMENTATIONS.items():
+        assert reason.strip(), name
+
+
+def test_a_run_with_mirroring_is_refused():
+    """Not merely defaulted off but actively refused, because an override can
+    set anything and a typo would otherwise cost a hundred minutes.
+    """
+    settings = {**runner.SCORE_DEFAULTS, "fliplr": 0.5}
+
+    with pytest.raises(ValueError, match="forbidden augmentation"):
+        runner.check_forbidden(settings)
+
+
+def test_the_refusal_names_the_offending_parameter():
+    with pytest.raises(ValueError, match="flipud"):
+        runner.check_forbidden({**runner.SCORE_DEFAULTS, "flipud": 1.0})
+
+
+def test_the_refusal_explains_why():
+    with pytest.raises(ValueError, match="mirror-symmetric"):
+        runner.check_forbidden({**runner.SCORE_DEFAULTS, "fliplr": 0.5})
+
+
+def test_a_clean_config_is_accepted():
+    runner.check_forbidden(dict(runner.SCORE_DEFAULTS))
+
+
+def test_an_override_cannot_smuggle_mirroring_past_the_check(tmp_path):
+    """Setting fliplr through --set must not start a run."""
+    data_yaml = build_dataset(tmp_path)
+
+    code = runner.main(["--data", str(data_yaml), "--check-only", "--set", "fliplr=0.5"])
+
+    assert code == 2
+
+
+# --------------------------------------------------------------------------- #
+# Nothing is inherited from ultralytics
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "imgsz",
+        "max_det",
+        "mosaic",
+        "close_mosaic",
+        "fliplr",
+        "flipud",
+        "degrees",
+        "scale",
+        "translate",
+        "shear",
+        "perspective",
+        "hsv_h",
+        "hsv_s",
+        "hsv_v",
+        "erasing",
+        "auto_augment",
+    ],
+)
+def test_every_augmentation_knob_is_stated_explicitly(name):
+    """A knob left unset inherits a COCO-photograph default, and the first
+    checkpoint is what that costs.
+    """
+    assert name in runner.SCORE_DEFAULTS
+
+
+def test_mosaic_is_off_rather_than_merely_closed_early():
+    """close_mosaic only stops mosaic for the last N epochs. The Colab run had
+    close_mosaic=10, so 20 of its 30 epochs still ran mosaicked.
+    """
+    assert runner.SCORE_DEFAULTS["mosaic"] == 0.0
+    assert runner.SCORE_DEFAULTS["close_mosaic"] == 0
+
+
+def test_rotation_is_small_and_non_zero():
+    """Matched to the residual tilt deskew leaves behind."""
+    degrees = runner.SCORE_DEFAULTS["degrees"]
+
+    assert 0.0 < degrees <= 2.0
+
+
+def test_rotation_covers_the_measured_deskew_residual():
+    """Derived from deskew's own constants rather than guessed.
+
+    Worst case is the Hough estimator's measured error (0.25 deg) plus the dead
+    zone below which deskew declines to rotate at all.
+    """
+    from melodix.geometry.deskew import DeskewConfig
+
+    worst_case = 0.25 + DeskewConfig().min_correction_deg
+
+    assert runner.SCORE_DEFAULTS["degrees"] > worst_case
+
+
+def test_shear_and_perspective_are_off():
+    """Deskew corrects rotation only. Training on warped pages teaches the
+    detector to read inputs Stage 1 will then fail to straighten.
+    """
+    assert runner.SCORE_DEFAULTS["shear"] == 0.0
+    assert runner.SCORE_DEFAULTS["perspective"] == 0.0
+
+
+def test_hue_and_saturation_are_off_but_brightness_is_not():
+    """A rendered page is grayscale in three channels, so saturation is zero
+    and hue undefined. Brightness genuinely varies on a real scan.
+    """
+    assert runner.SCORE_DEFAULTS["hsv_h"] == 0.0
+    assert runner.SCORE_DEFAULTS["hsv_s"] == 0.0
+    assert runner.SCORE_DEFAULTS["hsv_v"] > 0.0
+
+
+# --------------------------------------------------------------------------- #
+# The resolved config, recorded next to the weights
+# --------------------------------------------------------------------------- #
+
+
+def test_the_resolved_config_contains_every_setting(tmp_path):
+    settings = runner.resolve_settings(tmp_path / "d.yaml", tmp_path / "runs")
+
+    for name in runner.SCORE_DEFAULTS:
+        assert name in settings
+
+
+def test_overrides_win_over_the_defaults(tmp_path):
+    settings = runner.resolve_settings(
+        tmp_path / "d.yaml", tmp_path / "runs", overrides={"degrees": 7.5}
+    )
+
+    assert settings["degrees"] == 7.5
+
+
+def test_the_resolved_config_is_written_beside_the_weights(tmp_path):
+    """The drift this fixes: the first run's real settings were recoverable
+    only by loading the checkpoint.
+    """
+    settings = runner.resolve_settings(tmp_path / "d.yaml", tmp_path / "runs")
+
+    path = runner.write_resolved_config(tmp_path / "runs" / "r", "yolov8s.pt", settings)
+
+    assert path.name == runner.RESOLVED_CONFIG_NAME
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["settings"]["fliplr"] == 0.0
+    assert written["model"] == "yolov8s.pt"
+
+
+def test_the_resolved_config_records_the_class_count(tmp_path):
+    """So a run can be matched to the schema it trained against."""
+    settings = runner.resolve_settings(tmp_path / "d.yaml", tmp_path / "runs")
+
+    path = runner.write_resolved_config(tmp_path / "runs" / "r", "m.pt", settings)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["melodix_classes"] == NUM_CLASSES
+
+
+def test_check_only_prints_the_whole_resolved_config(tmp_path, capsys):
+    data_yaml = build_dataset(tmp_path)
+
+    runner.main(["--data", str(data_yaml), "--check-only"])
+
+    out = capsys.readouterr().out
+    assert "RESOLVED CONFIG" in out
+    assert "fliplr = 0.0" in out
+    assert "epochs = 30" in out
+
+
+# --------------------------------------------------------------------------- #
+# The degradation switch: built, deliberately unused
+# --------------------------------------------------------------------------- #
+
+
+def test_a_degraded_variant_can_be_selected(tmp_path, capsys):
+    source = build_dataset(tmp_path / "clean")
+    degraded_root = tmp_path / "degraded"
+    build_dataset(degraded_root)
+
+    code = runner.main(
+        ["--data", str(source), "--degraded", str(degraded_root), "--check-only"]
+    )
+
+    assert code == 0
+    assert str(degraded_root) in capsys.readouterr().out
+
+
+def test_a_missing_degraded_variant_is_reported(tmp_path, capsys):
+    source = build_dataset(tmp_path / "clean")
+
+    code = runner.main(
+        ["--data", str(source), "--degraded", str(tmp_path / "absent"), "--check-only"]
+    )
+
+    assert code == 2
+    assert "scripts/degrade.py" in capsys.readouterr().err
+
+
+def test_the_clean_dataset_is_used_by_default(tmp_path, capsys):
+    """The switch stays off until real pages show what to tune it against."""
+    data_yaml = build_dataset(tmp_path)
+
+    runner.main(["--data", str(data_yaml), "--check-only"])
+
+    preamble = capsys.readouterr().out.split("RESOLVED CONFIG")[0]
+    assert "degraded" not in preamble

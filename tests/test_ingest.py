@@ -31,6 +31,7 @@ from melodix.ingest import (
     load_image,
     load_pdf,
     page_count,
+    read_grayscale,
 )
 
 # US Letter in PDF points, the unit pypdfium2 scales from.
@@ -458,3 +459,56 @@ def test_a_loaded_image_feeds_staff_detection(tmp_path):
     grids = detect_staff_grids(load_image(path).image)
 
     assert len(grids) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Reading grayscale safely
+# --------------------------------------------------------------------------- #
+
+
+def test_a_grayscale_read_is_two_dimensional(tmp_path):
+    path = write_image(tmp_path / "page.png")
+
+    assert read_grayscale(path).ndim == 2
+
+
+def test_a_grayscale_read_is_uint8(tmp_path):
+    assert read_grayscale(write_image(tmp_path / "p.png")).dtype == np.uint8
+
+
+def test_a_singleton_channel_is_squeezed(monkeypatch, tmp_path):
+    """Importing ultralytics replaces cv2.imread process-wide with its own,
+    which returns (H, W, 1) for a grayscale read where OpenCV returns (H, W).
+
+    Nothing announces the substitution. Code indexing shape[:2] keeps working
+    while code assuming two dimensions silently gets a channel axis, and the
+    failure only appears once something else in the process has imported
+    ultralytics — which made it an ordering-dependent test failure rather than
+    an obvious bug.
+    """
+    import cv2
+
+    path = write_image(tmp_path / "page.png")
+    real = cv2.imread
+
+    def patched(name, flag=cv2.IMREAD_COLOR):
+        out = real(name, flag)
+        return out[:, :, np.newaxis] if out is not None and out.ndim == 2 else out
+
+    monkeypatch.setattr(cv2, "imread", patched)
+
+    assert cv2.imread(str(path), cv2.IMREAD_GRAYSCALE).ndim == 3  # the patch is live
+    assert read_grayscale(path).ndim == 2  # and we are immune to it
+
+
+def test_a_missing_file_is_reported(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        read_grayscale(tmp_path / "absent.png")
+
+
+def test_an_undecodable_file_is_reported(tmp_path):
+    path = tmp_path / "broken.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"garbage" * 4)
+
+    with pytest.raises(ValueError, match="could not decode"):
+        read_grayscale(path)

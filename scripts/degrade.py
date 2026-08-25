@@ -45,6 +45,7 @@ import numpy.typing as npt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from melodix.ingest import read_grayscale  # noqa: E402
 from melodix.vision.dataset import (  # noqa: E402
     IMAGE_SUFFIXES,
     Annotation,
@@ -498,9 +499,7 @@ def degrade_dataset(
         for index, path in enumerate(sorted(images_dir.iterdir())):
             if path.suffix.lower() not in IMAGE_SUFFIXES:
                 continue
-            image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-            if image is None:
-                raise ValueError(f"could not decode {path}")
+            image = read_grayscale(path)
 
             label_path = source / "labels" / split / f"{path.stem}.txt"
             boxes = parse_label_file(label_path)

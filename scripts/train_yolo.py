@@ -1,51 +1,36 @@
 """Train the Stage 2 symbol detector.
 
-A thin wrapper over ultralytics whose real content is its defaults. The stock
-YOLO settings are tuned for photographs of everyday objects, and several of
-them quietly destroy sheet music. This script changes those and leaves the rest
-alone.
+A thin wrapper over ultralytics whose real content is :data:`SCORE_DEFAULTS`.
+Every augmentation and inference value is stated there explicitly with a
+one-line reason; nothing is inherited. An ultralytics default is tuned for COCO
+photographs, and several of those defaults are actively destructive on engraved
+notation.
 
-What differs from stock, and why
---------------------------------
-``imgsz=1280``
-    A notehead on a letter page scanned at 300 DPI is roughly 20 px across.
-    The stock 640 halves that before the first convolution and the class
-    difference between a round and a cross head stops being visible.
+That is not hypothetical. The first checkpoint was trained by an ad-hoc
+``model.train()`` call that bypassed this script entirely, so it ran on stock
+values: ``fliplr=0.5`` (half the pages mirrored, teaching invariance to the
+left-right asymmetry that distinguishes time signatures, accents and stem
+direction), ``mosaic=1.0`` (four pages per frame, halving effective resolution
+for the smallest symbols) and ``degrees=0.0`` (no exposure to the residual tilt
+deskew leaves behind). See ``models/PROVENANCE.md``.
 
-``mosaic=0.0``
-    Mosaic augmentation stitches four images into one, so a page fragment sits
-    against three unrelated fragments. It is excellent for scattered objects
-    and actively harmful here: notation is a grid, and a detector benefits from
-    learning that hi-hats sit in a row above snares. Mosaic destroys exactly
-    that regularity, and the seams it creates look like barlines.
-
-``degrees=2.0``
-    Real scans are tilted by a degree or two, and Stage 1 corrects them before
-    the detector ever runs. Training past that range wastes capacity on
-    rotations the pipeline guarantees will not arrive.
-
-``max_det=3000``
-    Ultralytics stops at 300 detections. A dense ensemble page passes that
-    inside the second system, so validation mAP would be measured against a
-    truncated page and read far worse than the model deserves.
-
-``fliplr=0.0``, ``flipud=0.0``
-    Notation is not mirror-symmetric. A flipped page teaches the model that a
-    reversed flag or an upside-down rest is a valid symbol, and nothing in the
-    pipeline will ever show it one.
-
-``scale`` is left fairly wide, because engraving size genuinely varies between
-publishers and between systems on one page.
+**Ad-hoc ``model.train()`` calls are not the supported path.** They drift, and
+the drift is invisible until someone reads the checkpoint. Use this script, or
+``notebooks/train_colab.ipynb``, which calls it. Every run writes its fully
+resolved configuration to ``melodix_resolved_config.json`` beside the weights,
+so a run's real settings are recoverable from the run itself — and a run
+directory lacking that file is identifiable as one that did not come through
+here.
 
 Usage::
 
     python scripts/train_yolo.py --data datasets/melodix_synth/data.yaml
-    python scripts/train_yolo.py --data d.yaml --epochs 100 --batch 8 --resume
+    python scripts/train_yolo.py --data d.yaml --degraded datasets/melodix_degraded
 """
-
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -60,22 +45,92 @@ from melodix.vision.labels import NUM_CLASSES, class_names  # noqa: E402
 #: budget is better spent on imgsz than on parameters.
 DEFAULT_MODEL = "yolov8s.pt"
 
-#: Augmentation and inference settings that differ from the ultralytics stock
-#: values. See the module docstring for the reasoning behind each.
+#: Written into every run directory so a run's real settings are recoverable
+#: from the run itself, not only from inside the checkpoint.
+RESOLVED_CONFIG_NAME = "melodix_resolved_config.json"
+
+#: Every augmentation and inference setting, stated explicitly with a reason.
+#:
+#: Nothing here is left to inherit. An ultralytics default is tuned for COCO
+#: photographs of everyday objects, and several of those defaults are actively
+#: destructive on engraved notation — which is not hypothetical: the first
+#: checkpoint was trained on stock values and carries the damage.
 SCORE_DEFAULTS: dict[str, object] = {
+    # -- resolution ------------------------------------------------------- #
+    # A notehead on a letter page at 300 DPI is ~20 px. The stock 640 halves
+    # that before the first convolution and round-vs-cross stops being visible.
     "imgsz": 1280,
+    # Ultralytics stops at 300 detections; a dense ensemble page passes that
+    # inside the second system, so validation would score a truncated page.
     "max_det": 3000,
-    "degrees": 2.0,
-    "mosaic": 0.0,
+    # -- mirroring: the one that must never come back ---------------------- #
+    # Music notation is not mirror-symmetric, and flipping does worse than
+    # waste samples: it teaches invariance to left-right asymmetry, which is
+    # the exact cue several glyphs are distinguished by. Time signature digits
+    # mirror into non-glyphs; an accent (>) mirrors into (<), which is not in
+    # the schema; stems attach right for stem-up and left for stem-down, so a
+    # mirrored page shows stem-up-on-the-left, which no engraver produces.
     "fliplr": 0.0,
+    # Same argument, more obviously. An upside-down page is not a page.
     "flipud": 0.0,
+    # -- mosaic ------------------------------------------------------------ #
+    # Four pages stitched into one frame puts each source page in roughly a
+    # 640x640 region of a 1280 canvas, halving effective resolution for exactly
+    # the small symbols that are already weakest, and cutting glyphs at the
+    # seams. The seams themselves read as barlines. Off entirely rather than
+    # relying on close_mosaic to undo it for the last few epochs.
+    "mosaic": 0.0,
+    "close_mosaic": 0,  # moot at mosaic=0, set so it cannot be inherited
+    # -- geometry ---------------------------------------------------------- #
+    # Derived from what Stage 1 actually leaves behind, not guessed. Deskew
+    # quantises to fine_step_deg=0.05 and declines to rotate below
+    # min_correction_deg=0.10, so up to 0.10 deg survives by design; measured
+    # residual on synthetic pages is 0.050 deg, max 0.100. The projection
+    # estimator's measured error is 0.12 deg and the Hough path's is 0.25, so a
+    # realistic worst case is ~0.35 deg. 1.0 gives roughly 3x margin over that
+    # and partial cover for the tail where deskew declines on low confidence
+    # and the full tilt reaches the detector.
+    "degrees": 1.0,
+    # Engraving size genuinely varies between publishers and between systems on
+    # one page, so scale augmentation is real signal. Kept below the stock 0.5:
+    # shrinking a page that is already at the resolution floor for small glyphs
+    # costs more than the invariance is worth.
     "scale": 0.35,
+    # Page margins vary; symbol positions within a system do not vary much.
+    # A small shift only.
     "translate": 0.05,
+    # Nothing in the pipeline produces or corrects shear. A sheared page is not
+    # a scan artefact — a scanner produces rotation and perspective, not skew
+    # along one axis — so this trains for an input that cannot arrive.
     "shear": 0.0,
+    # Deskew corrects rotation only; it has no perspective model. Training on
+    # warped pages would teach the detector to read pages that Stage 1 will
+    # then fail to straighten, moving the failure downstream rather than
+    # removing it. Revisit only if real pages turn out to be phone photographs
+    # (see scripts/degrade.py, which can produce them when that is known).
     "perspective": 0.0,
+    # -- colour ------------------------------------------------------------ #
+    # A rendered page is grayscale promoted to three channels, so every pixel
+    # has zero saturation and undefined hue: both of these are inert on this
+    # data. Set to zero to say so, rather than inheriting 0.015/0.7 and leaving
+    # a reader to wonder whether they mattered.
     "hsv_h": 0.0,
     "hsv_s": 0.0,
+    # Brightness is the one colour axis that does vary on a real scan.
     "hsv_v": 0.25,
+    # -- classification-only knobs ----------------------------------------- #
+    # These apply to YOLO classification, not detection, so they are inert
+    # here. Pinned anyway: inert-by-default is not the same as inert-by-intent,
+    # and a future ultralytics could extend them to detect.
+    "erasing": 0.0,
+    "auto_augment": None,
+}
+
+#: Augmentations that must never be enabled, and why in one phrase. Guarded by
+#: a test: this is the regression that would be invisible in every metric.
+FORBIDDEN_AUGMENTATIONS: dict[str, str] = {
+    "fliplr": "notation is not mirror-symmetric",
+    "flipud": "notation is not mirror-symmetric",
 }
 
 
@@ -184,6 +239,46 @@ def train(
             '    pip install -e ".[dev,vision]"'
         ) from error
 
+    settings = resolve_settings(
+        data_yaml=data_yaml,
+        output_dir=output_dir,
+        epochs=epochs,
+        batch=batch,
+        device=device,
+        workers=workers,
+        patience=patience,
+        resume=resume,
+        name=name,
+        overrides=overrides,
+    )
+    check_forbidden(settings)
+
+    run_dir = output_dir / name
+    write_resolved_config(run_dir, model, settings)
+
+    return YOLO(model).train(**settings)
+
+
+def resolve_settings(
+    data_yaml: Path,
+    output_dir: Path,
+    epochs: int = 30,
+    batch: int = 8,
+    device: str | None = None,
+    workers: int = 4,
+    patience: int = 20,
+    resume: bool = False,
+    name: str = "melodix_symbols",
+    overrides: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Build the exact argument dict that will be handed to ultralytics.
+
+    Separated from :func:`train` so the resolved configuration can be printed,
+    written to disk and asserted on without starting a run.
+
+    Returns:
+        Every setting, with ``overrides`` applied last.
+    """
     settings: dict[str, object] = {
         "data": str(data_yaml),
         "epochs": epochs,
@@ -200,8 +295,63 @@ def train(
         settings["device"] = device
     if overrides:
         settings.update(overrides)
+    return settings
 
-    return YOLO(model).train(**settings)
+
+def check_forbidden(settings: dict[str, object]) -> None:
+    """Refuse to start a run with an augmentation known to be harmful.
+
+    An override is allowed to set anything, including the mirror flips, so this
+    is the backstop that turns a typo into a refusal rather than a wasted
+    hundred minutes and a subtly worse model.
+
+    Raises:
+        ValueError: If a forbidden augmentation is enabled.
+    """
+    enabled = [
+        f"{key}={settings[key]} ({reason})"
+        for key, reason in FORBIDDEN_AUGMENTATIONS.items()
+        if float(settings.get(key, 0.0) or 0.0) != 0.0
+    ]
+    if enabled:
+        listed = "; ".join(enabled)
+        raise ValueError(
+            f"refusing to train with a forbidden augmentation: {listed}. "
+            f"These do not merely waste samples, they teach invariance to a cue "
+            f"the schema depends on. Override FORBIDDEN_AUGMENTATIONS only with "
+            f"a written reason."
+        )
+
+
+def write_resolved_config(
+    run_dir: Path, model: str, settings: dict[str, object]
+) -> Path:
+    """Record the resolved configuration next to the weights.
+
+    The root cause of this project's one configuration drift was a run that
+    bypassed this script, leaving its real settings recoverable only from
+    inside the checkpoint. Writing them beside the weights means a run's
+    settings can be read without loading torch — and a run whose directory
+    lacks this file is identifiable as one that did not come through here.
+
+    Args:
+        run_dir: Directory ultralytics will write the run into.
+        model: Base checkpoint or architecture.
+        settings: The resolved arguments.
+
+    Returns:
+        Path to the file written.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / RESOLVED_CONFIG_NAME
+    payload = {
+        "written_by": "scripts/train_yolo.py",
+        "model": model,
+        "melodix_classes": NUM_CLASSES,
+        "settings": {key: settings[key] for key in sorted(settings)},
+    }
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return path
 
 
 def parse_overrides(pairs: list[str]) -> dict[str, object]:
@@ -258,6 +408,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patience", type=int, default=20, help="early-stopping patience")
     parser.add_argument("--resume", action="store_true", help="continue an interrupted run")
     parser.add_argument(
+        "--degraded",
+        type=Path,
+        default=None,
+        help=(
+            "train against a degraded copy produced by scripts/degrade.py instead "
+            "of --data. Deliberately unused: degradation simulates a distribution "
+            "nobody has observed yet, so the effects cannot be tuned until real "
+            "pages exist. The switch is here so a run can start the day they do."
+        ),
+    )
+    parser.add_argument(
         "--check-only",
         action="store_true",
         help="verify the dataset and print the settings, then exit without training",
@@ -277,19 +438,53 @@ def main(argv: list[str] | None = None) -> int:
     """Command-line entry point."""
     args = build_parser().parse_args(argv)
 
+    data_yaml = args.data
+    if args.degraded is not None:
+        degraded_yaml = args.degraded / "data.yaml"
+        if not degraded_yaml.exists():
+            print(
+                f"--degraded {args.degraded} has no data.yaml. Produce one with:\n"
+                f"    python scripts/degrade.py --in {args.data.parent} "
+                f"--out {args.degraded}",
+                file=sys.stderr,
+            )
+            return 2
+        data_yaml = degraded_yaml
+        print(f"training against the degraded variant at {data_yaml}")
+
     try:
-        counts = verify_dataset(args.data)
+        counts = verify_dataset(data_yaml)
     except (FileNotFoundError, ValueError) as error:
         print(f"dataset check failed: {error}", file=sys.stderr)
         return 2
 
     overrides = parse_overrides(args.overrides)
-    print(f"dataset {args.data}")
+    settings = resolve_settings(
+        data_yaml=data_yaml,
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+        batch=args.batch,
+        device=args.device,
+        workers=args.workers,
+        patience=args.patience,
+        resume=args.resume,
+        name=args.name,
+        overrides=overrides,
+    )
+
+    print(f"dataset {data_yaml}")
     print(f"  train {counts['train']} images, val {counts['val']} images")
     print(f"  {NUM_CLASSES} classes, matching melodix.vision.labels")
-    print(f"model {args.model}, {args.epochs} epochs, batch {args.batch}")
-    for key, value in sorted({**SCORE_DEFAULTS, **overrides}.items()):
-        print(f"  {key} = {value}")
+    print(f"model {args.model}")
+    print("\nRESOLVED CONFIG (every value; nothing inherited from ultralytics)")
+    for key in sorted(settings):
+        print(f"  {key} = {settings[key]}")
+
+    try:
+        check_forbidden(settings)
+    except ValueError as error:
+        print(f"\n{error}", file=sys.stderr)
+        return 2
 
     if args.check_only:
         print("\n--check-only: not training")
@@ -299,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
         print("warning: under 2 GB free; a run writes checkpoints each epoch", file=sys.stderr)
 
     results = train(
-        data_yaml=args.data,
+        data_yaml=data_yaml,
         output_dir=args.output_dir,
         model=args.model,
         epochs=args.epochs,

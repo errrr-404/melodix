@@ -64,6 +64,7 @@ __all__ = [
     "load_image",
     "load_pdf",
     "page_count",
+    "read_grayscale",
 ]
 
 #: Render resolution that puts roughly 20 px between staff lines on a
@@ -163,6 +164,44 @@ class Page:
             "width": self.width,
             "height": self.height,
         }
+
+
+def read_grayscale(path: Path) -> npt.NDArray[np.uint8]:
+    """Read an image as a strictly 2-D grayscale array.
+
+    Use this rather than ``cv2.imread(..., cv2.IMREAD_GRAYSCALE)`` anywhere the
+    same process might also import ultralytics.
+
+    Importing ultralytics replaces ``cv2.imread`` process-wide with
+    ``ultralytics.utils.patches.imread``, which returns ``(H, W, 1)`` for a
+    grayscale read where OpenCV returns ``(H, W)``. Nothing announces the
+    substitution, and code that indexes ``shape[:2]`` keeps working while code
+    that assumes two dimensions quietly gets a singleton channel axis. This
+    normalises the result either way.
+
+    Args:
+        path: Image to read.
+
+    Returns:
+        A 2-D ``uint8`` array.
+
+    Raises:
+        FileNotFoundError: If the file is missing.
+        ValueError: If it cannot be decoded.
+    """
+    import cv2
+
+    _check_readable(path)
+    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise ValueError(f"could not decode {path}")
+
+    array = np.asarray(image)
+    if array.ndim == 3 and array.shape[2] == 1:
+        array = array[:, :, 0]
+    if array.ndim != 2:
+        raise ValueError(f"expected a 2-D grayscale image, got shape {array.shape}")
+    return np.ascontiguousarray(array, dtype=np.uint8)
 
 
 def _check_dpi(dpi: int) -> None:

@@ -45,6 +45,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from melodix.ingest import read_grayscale  # noqa: E402
 from melodix.vision.dataset import (  # noqa: E402
     IMAGE_SUFFIXES,
     Annotation,
@@ -360,7 +361,6 @@ def evaluate(
             )
         )
 
-    import cv2
 
     ensemble_stems = load_manifest(root)
     overall = Evaluation()
@@ -370,9 +370,7 @@ def evaluate(
     for path in sorted(images_dir.iterdir()):
         if path.suffix.lower() not in IMAGE_SUFFIXES:
             continue
-        image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if image is None:
-            raise ValueError(f"could not decode {path}")
+        image = read_grayscale(path)
 
         label_path = labels_dir / f"{path.stem}.txt"
         annotations = parse_label_file(label_path) if label_path.exists() else ()
