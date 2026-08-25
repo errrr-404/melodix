@@ -31,7 +31,9 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -118,7 +120,9 @@ def overlay_stage_one(canvas: npt.NDArray[np.uint8], page: npt.NDArray[np.uint8]
     return summary
 
 
-def draw_detections(canvas: npt.NDArray[np.uint8], detections, label_every: bool) -> None:
+def draw_detections(
+    canvas: npt.NDArray[np.uint8], detections: Iterable[Any], label_every: bool
+) -> None:
     """Draw each detection as a coloured box with its class and confidence."""
     for hit in detections:
         colour = CATEGORY_COLOURS.get(hit.category, (60, 60, 60))
@@ -142,7 +146,7 @@ def draw_detections(canvas: npt.NDArray[np.uint8], detections, label_every: bool
             )
 
 
-def summarise(detections) -> dict:
+def summarise(detections: list[Any]) -> dict:
     """Describe a page's detections without judging them."""
     if not detections:
         return {"count": 0, "by_class": {}, "confidence": {}}
@@ -163,7 +167,9 @@ def summarise(detections) -> dict:
     }
 
 
-def inspect_page(page: Page, detector, out_dir: Path, staves: bool, labels: bool) -> dict:
+def inspect_page(
+    page: Page, detector: Any, out_dir: Path, staves: bool, labels: bool
+) -> dict:
     """Annotate one page and return what was on it.
 
     Args:
