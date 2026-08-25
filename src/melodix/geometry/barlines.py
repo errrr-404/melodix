@@ -81,6 +81,9 @@ class BarlineDetectionConfig:
         merge_max_gap_px: Largest vertical gap bridged when merging fragments.
             Keep this well below the gap between staves, or a barline on one
             staff will fuse with the barline beneath it.
+        gap_closing_ratio: Length of the gap-bridging closing kernel, as a
+            fraction of image height. See :func:`isolate_vertical_runs`. Set to
+            0 to disable the closing.
     """
 
     vertical_kernel_ratio: float = 0.60
@@ -91,6 +94,7 @@ class BarlineDetectionConfig:
     min_aspect_ratio: float = 3.0
     merge_x_tolerance_px: float = 2.0
     merge_max_gap_px: int = 3
+    gap_closing_ratio: float = 0.0023
 
     def __post_init__(self) -> None:
         """Validate the configuration.
@@ -121,6 +125,10 @@ class BarlineDetectionConfig:
         if self.merge_max_gap_px < 0:
             raise ValueError(
                 f"merge_max_gap_px must be non-negative, got {self.merge_max_gap_px}"
+            )
+        if not 0.0 <= self.gap_closing_ratio < 1.0:
+            raise ValueError(
+                f"gap_closing_ratio must be in [0, 1), got {self.gap_closing_ratio}"
             )
 
 
@@ -211,6 +219,7 @@ class VerticalSegment:
 def isolate_vertical_runs(
     binary: BinaryImage,
     kernel_height: int,
+    config: BarlineDetectionConfig = DEFAULT_CONFIG,
 ) -> BinaryImage:
     """Erase everything that is not a tall vertical stroke.
 
@@ -219,10 +228,41 @@ def isolate_vertical_runs(
     opening with a tall, one-pixel-wide kernel keeps only ink that survives
     erosion by it. Staff lines, beams, noteheads and text vanish.
 
+    Why a closing runs first
+    ------------------------
+    Being a deliberate mirror of the horizontal pass, this inherited its
+    fragility by construction. An opening needs an **unbroken** run at least as
+    long as its kernel, so interruptions that leave no fragment that long erase
+    the stroke entirely.
+
+    The margin is thinner here than for a staff line. The vertical kernel is
+    ``vertical_kernel_ratio`` (0.60) of the minimum stroke height, and a barline
+    is only a little taller than that minimum, so a barline can be lost to a
+    *single* interruption near its middle where a page-width staff line needs
+    two.
+
+    The consequence is worse here than for a staff line, because it is silent
+    and it propagates. A dropped barline removes a measure boundary, so two
+    measures merge into one and **every subsequent measure index on that staff
+    shifts by one**. Stage 3 addresses notes by
+    ``(system, staff, measure)``, so a page that loses one barline near the top
+    produces a plausible, complete, wrongly-timed transcription rather than an
+    error.
+
+    The justification is the mechanism, not any particular noise model: one
+    interrupted pixel destroys an entire stroke, and real pages interrupt
+    strokes for many reasons — fold creases, staple holes, faint toner, pencil
+    marks, JPEG ringing.
+
+    A one-pixel-wide closing kernel spans rows only, so it cannot pull a
+    neighbouring stem sideways into a barline. It can only bridge ink already
+    sharing a column.
+
     Args:
         binary: Ink mask from :func:`~melodix.geometry.staff.binarize`.
         kernel_height: Height of the opening kernel in pixels. Forced odd, so
             that the anchor sits at the true centre.
+        config: Detection thresholds, for the gap-closing length.
 
     Returns:
         A mask containing only tall vertical structures.
@@ -232,6 +272,18 @@ def isolate_vertical_runs(
     """
     if kernel_height < 1:
         raise ValueError(f"kernel_height must be positive, got {kernel_height}")
+
+    if config.gap_closing_ratio > 0.0:
+        # Same derivation as the horizontal pass: a closing of length k bridges
+        # a gap of up to k-1 px, and the ratio targets 0.5 mm of page, the
+        # scale of a speck or a toner dropout. Measured against image height,
+        # since that is the axis the gap runs along.
+        gap = max(1, int(round(binary.shape[0] * config.gap_closing_ratio)))
+        closing_height = max(3, gap + 1) | 1
+        closing = cv2.getStructuringElement(cv2.MORPH_RECT, (1, closing_height))
+        binary = np.ascontiguousarray(
+            cv2.morphologyEx(binary, cv2.MORPH_CLOSE, closing), dtype=np.uint8
+        )
 
     # An even-height kernel anchors off-centre, so erosion and dilation are not
     # symmetric and the opening shifts every stroke one pixel down. Force odd,
@@ -365,7 +417,7 @@ def detect_vertical_segments(
     min_height = _resolve_min_height(gray.shape[0], config, staff_spacing)
     kernel_height = max(3, int(round(min_height * config.vertical_kernel_ratio)))
 
-    vertical = isolate_vertical_runs(binary, kernel_height)
+    vertical = isolate_vertical_runs(binary, kernel_height, config)
     segments = extract_vertical_segments(vertical, min_height, config)
     return merge_collinear(segments, config)
 

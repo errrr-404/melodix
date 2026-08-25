@@ -144,5 +144,9 @@ pytest --cov=melodix --cov-report=term-missing
   - `scripts/inspect_real.py` — annotated pages, Stage 1 overlay, no ground truth needed
   - `evaluate_real.py` reports small-class AP50 and centroid error against Stage 1's snap budget
   - **Finding: Stage 1 staff detection fails on speckled pages.** See `models/PROVENANCE.md`.
+- [x] **Phase 1.5** Stage 1 gap tolerance
+  - Both morphological passes close short gaps before opening; kernel derived from page scale
+  - `tests/test_stage1_adversarial.py` — interrupted, faint, crossed and speckled ink
+  - **Still open: `binarize` uses global Otsu and fails on uneven illumination.**
 - [ ] **Phase 3** Reconstruction and MIDI
 - [ ] **Phase 4** Synthesis and encoding

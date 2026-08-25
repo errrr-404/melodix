@@ -104,6 +104,10 @@ class StaffDetectionConfig:
         min_line_spacing: Absolute floor, in pixels, on the gap between
             adjacent staff lines. Guards against noise rows grouping into a
             degenerate "staff" a few pixels tall.
+        gap_closing_ratio: Length of the gap-bridging closing kernel, as a
+            fraction of image width. See :func:`isolate_horizontal_runs` for
+            why the closing exists and how this number was derived. Set to 0
+            to disable the closing entirely.
     """
 
     horizontal_kernel_ratio: float = 0.35
@@ -111,6 +115,7 @@ class StaffDetectionConfig:
     spacing_tolerance: float = 0.25
     max_thickness_ratio: float = 0.60
     min_line_spacing: float = 3.0
+    gap_closing_ratio: float = 0.0023
 
     def __post_init__(self) -> None:
         """Validate the configuration.
@@ -136,6 +141,10 @@ class StaffDetectionConfig:
             )
         if self.min_line_spacing <= 0.0:
             raise ValueError(f"min_line_spacing must be positive, got {self.min_line_spacing}")
+        if not 0.0 <= self.gap_closing_ratio < 1.0:
+            raise ValueError(
+                f"gap_closing_ratio must be in [0, 1), got {self.gap_closing_ratio}"
+            )
 
 
 DEFAULT_CONFIG: Final[StaffDetectionConfig] = StaffDetectionConfig()
@@ -457,6 +466,34 @@ def isolate_horizontal_runs(
     that survives erosion by that kernel — staff lines and the occasional long
     beam or underline. Noteheads, stems, flags, text and dynamics vanish.
 
+    Why a closing runs first
+    ------------------------
+    An opening requires an **unbroken** run at least as long as its kernel.
+    Interruptions split a line into fragments, and every fragment shorter than
+    the kernel is erased outright — not thinned, erased.
+
+    Stated precisely, because the loose version overstates it: a line dies once
+    no surviving fragment is as long as the kernel. The kernel is
+    ``horizontal_kernel_ratio`` of page width, 35%, so a line spanning most of
+    the page survives one break (two fragments of ~50% each) and dies at
+    **two** (three fragments of ~33%). Measured on a 600 px line with a 281 px
+    kernel: one break leaves a 300 px fragment and the staff is found; two
+    breaks leave 200 px and it is not.
+
+    Two specks of dust, then, are enough to erase a staff line.
+
+    Real pages interrupt lines constantly, and for many more reasons than dust:
+    fold creases, staple holes, faint or streaky toner, pencil marks, scanner
+    dropout, JPEG ringing around the line edge. This is a structural property of
+    the opening, not a response to any particular noise model — the fix predates
+    knowing what real pages look like and does not depend on that knowledge.
+
+    So a closing runs first, bridging short interruptions before the opening
+    demands continuity. Closing then opening is a morphological *alternating
+    filter*; it cannot add ink where there was none along the line's length
+    beyond the bridged gap, and it cannot join vertically because the kernel is
+    one pixel tall.
+
     Args:
         binary: Ink mask from :func:`binarize`.
         config: Detection thresholds.
@@ -465,6 +502,23 @@ def isolate_horizontal_runs(
         A mask containing only long horizontal structures.
     """
     width = binary.shape[1]
+
+    if config.gap_closing_ratio > 0.0:
+        # A closing of length k bridges a gap of up to k-1 px, verified rather
+        # than assumed. gap_closing_ratio targets 0.5 mm of page, which is the
+        # scale of a dust speck or a toner dropout and comfortably larger than
+        # the one or two pixels salt noise removes. 0.5 mm is 0.232% of page
+        # width at *every* DPI — both the gap and the page scale together — so
+        # a width ratio is the resolution-invariant way to express it.
+        gap = max(1, int(round(width * config.gap_closing_ratio)))
+        # Odd for the same reason the opening kernel is odd: an even kernel
+        # anchors off-centre and shifts every line one pixel sideways.
+        closing_length = max(3, gap + 1) | 1
+        closing = cv2.getStructuringElement(cv2.MORPH_RECT, (closing_length, 1))
+        binary = np.ascontiguousarray(
+            cv2.morphologyEx(binary, cv2.MORPH_CLOSE, closing), dtype=np.uint8
+        )
+
     kernel_length = max(3, int(round(width * config.horizontal_kernel_ratio)))
     # An even-width kernel anchors off-centre, so erosion and dilation are not
     # symmetric and the opening shifts every line one pixel right. Force odd.

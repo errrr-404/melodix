@@ -310,6 +310,77 @@ into the checkpoint's `train_args`:
 That is the exact drift that produced the baseline's stock augmentation, now
 closed and checked end to end rather than assumed.
 
+## Stage 1 gap tolerance, and a second failure mode still open
+
+Both morphological passes now close short gaps before opening. Kernel length is
+derived: a closing of length `k` bridges a gap of up to `k-1` px (measured), and
+`gap_closing_ratio = 0.0023` targets **0.5 mm of page**, the scale of a dust
+speck or a toner dropout. 0.5 mm is 0.232% of page width at *every* DPI — gap
+and page scale together — so a width ratio is the resolution-invariant way to
+say it.
+
+### The mechanism, stated accurately
+
+The loose claim is that one interrupted pixel destroys a line. Measured, that is
+too strong for a staff line and about right for a barline.
+
+An opening needs an unbroken run **at least as long as its kernel**. The
+horizontal kernel is 35% of page width, so a line spanning most of the page
+survives one break — two fragments of ~50% — and dies at two, where the three
+fragments are ~33%. On a 600 px line with a 281 px kernel: one break leaves
+300 px and the staff is found; two breaks leave 200 px and it is not.
+
+**Two specks of dust erase a staff line.** A barline is worse: the vertical
+kernel is 60% of the minimum stroke height and a barline is barely taller than
+that minimum, so a *single* interruption loses it — confirmed, 2 segments
+recovered instead of 3.
+
+A lost barline is the more damaging of the two because it is silent and it
+propagates. It merges two measures and shifts every later measure index on that
+staff, and Stage 3 addresses notes by `(system, staff, measure)`, so the result
+is a complete, plausible, wrongly-timed transcription rather than an error.
+
+### Recovery, as a distribution
+
+Staves recovered over 12 noise seeds, 5 expected, on the synthetic page:
+
+| salt-and-pepper density | without closing | with closing |
+|---|---|---|
+| 0.0000 | 12/12 full, mean 5.00 | 12/12 full, mean 5.00 |
+| 0.0010 | 11/12 full, mean 4.92 | **12/12** |
+| 0.0025 | 8/12 full, mean 4.67 | **12/12** |
+| 0.0050 | 4/12 full, mean 3.67 | **12/12** |
+| 0.0100 | 0/12 full, mean 2.42 | **12/12** |
+| 0.0200 | 0/12 full, mean 0.08 | **12/12** |
+
+**The low-DPI floor did not move.** Verified at 24, 28, 30, 31, 32, 36, 48, 72,
+150 and 300 DPI on a 7 pt engraving: identical results with and without the
+closing. The floor remains ~31 DPI, where rendered spacing crosses
+`min_line_spacing`.
+
+### Still open: binarisation, a second failure of the same family
+
+**The closing does not rescue the degraded proxy page**, and it is honest to say
+so plainly. That page still yields zero staves, for a different reason.
+
+`binarize` uses **global** Otsu. On a page carrying low-frequency texture and a
+brightness shift — which is what uneven illumination, page curl and toner
+variation produce — a single global threshold cannot separate ink from paper
+across the whole sheet. Measured on that page:
+
+| thresholding | ink found | after morphology | bands | staves |
+|---|---|---|---|---|
+| global Otsu (current) | 4.1% | 1,019 px | 2 | **0** |
+| adaptive (Gaussian, 51/10) | 7.7% | 31,880 px | 25 | **5** |
+
+So the run-continuity mode is fixed and the binarisation mode is not. It is the
+same shape of bug: the implementation assumes uniform illumination and every
+fixture supplied uniform illumination. **Not implemented here** — it changes
+`binarize`, which sits under everything in Stage 1, and needs its own derivation
+(block size relative to staff spacing), its own adversarial fixtures, and a
+check that it does not manufacture ink in blank margins. Recorded as the next
+fix, ahead of anything else in Stage 1.
+
 ## First look at a degraded page: Stage 1 is the fragile stage, not Stage 2
 
 No real page exists in the repo yet, so this was measured on the closest
